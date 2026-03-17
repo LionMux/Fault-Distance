@@ -19,7 +19,7 @@ class CNN1D(nn.Module):
         - Fully connected layers for regression
     """
     
-    def __init__(self, seq_length=300, num_filters=64, kernel_size=5, 
+    def __init__(self, seq_length=400, num_filters=64, kernel_size=5, 
                  dropout=0.3, num_fc_layers=2):
         """
         Args:
@@ -147,7 +147,7 @@ class CNN1DRegressor:
     Wrapper for CNN1D with training utilities.
     """
     
-    def __init__(self, seq_length=300, num_filters=64, kernel_size=5, 
+    def __init__(self, seq_length=400, num_filters=64, kernel_size=5, 
                  dropout=0.3, device='cpu'):
         """
         Args:
@@ -204,7 +204,7 @@ class DilatedCNN1D(nn.Module):
     Better for capturing long-range dependencies in signals.
     """
     
-    def __init__(self, seq_length=300, num_filters=64, kernel_size=3, 
+    def __init__(self, seq_length=400, num_filters=64, kernel_size=3, 
                  dropout=0.3, dilations=[1, 2, 4, 8]):
         """
         Args:
