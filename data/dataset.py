@@ -4,7 +4,7 @@ PyTorch Dataset for Short-Circuit Fault Oscillogram Data
 Format:
     CSV with columns:
     - Column 0: Fault distance in kilometers
-    - Columns 1-300: Instantaneous signal values (100ms pre-fault + 200ms fault)
+    - Columns 1-400: Instantaneous signal values (100ms pre-fault + 300ms fault)
 """
 
 import numpy as np
@@ -22,12 +22,12 @@ class FaultDataset(Dataset):
     Loads oscillogram data from CSV and provides normalized signal/distance pairs.
     """
     
-    def __init__(self, csv_path, seq_length=300, normalize=True, 
+    def __init__(self, csv_path, seq_length=400, normalize=True, 
                  scaler_signal=None, scaler_distance=None):
         """
         Args:
             csv_path (str): Path to oscillogram CSV file
-            seq_length (int): Expected signal length (should be 300)
+            seq_length (int): Expected signal length (should be 400)
             normalize (bool): Whether to normalize data
             scaler_signal (StandardScaler): Pre-fitted scaler for signals (for test set)
             scaler_distance (MinMaxScaler): Pre-fitted scaler for distances (for test set)
