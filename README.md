@@ -30,7 +30,7 @@ Traditional methods:
 Each row contains one fault oscillogram:
 
 ```csv
-distance_km,sample_0,sample_1,...,sample_299
+distance_km,sample_0,sample_1,...,sample_399
 12.5,0.001,0.002,...,-0.001
 25.3,0.002,-0.001,...,0.003
 ...
@@ -38,10 +38,10 @@ distance_km,sample_0,sample_1,...,sample_299
 
 **Columns:**
 - **Column 0**: Fault distance (km) - **Label**
-- **Columns 1-300**: Signal samples - **Features** (300 time points)
+- **Columns 1-400**: Signal samples - **Features** (400 time points)
 
 ### Signal Specifications
-- **Duration**: 300 ms (100 ms pre-fault + 200 ms post-fault)
+- **Duration**: 400 ms (100 ms pre-fault + 300 ms post-fault)
 - **Sampling rate**: 1 kHz (typical for SCADA systems)
 - **Channel**: Single-phase current or voltage
 - **Range**: Typically [-1.0, 1.0] A or V (normalized)
@@ -104,7 +104,7 @@ python inference.py --model checkpoints/best_model.pth \
 #### 1. CNN1D (Default)
 Simple 1D CNN for fast training:
 ```
-Input (1, 300)
+Input (1, 400)
   ⬇
  Conv1d(1 → 64, k=5) + BN + ReLU + MaxPool
   ⬇
@@ -310,7 +310,7 @@ predictor = FaultDistancePredictor(
     device='cuda'
 )
 
-# Load signals (N, 300)
+# Load signals (N, 400)
 signals = np.load('signals.npy')
 
 # Predict
