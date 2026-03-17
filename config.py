@@ -21,7 +21,7 @@ class Config:
     TRAIN_SPLIT: float = 0.8  # 80% train, 20% test
     
     # ============ DATA PREPROCESSING ============
-    SEQ_LENGTH: int = 300  # Signal length (columns in CSV)
+    SEQ_LENGTH: int = 400  # Signal length (columns in CSV)
     NORMALIZE_DATA: bool = True
     
     # ============ MODEL ARCHITECTURE ============
