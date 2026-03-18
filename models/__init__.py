@@ -1,6 +1,7 @@
-from .cnn1d import CNN1D, CNN1DRegressor
-from .resnet1d import ResNet1D, ResNet1DRegressor
-from .blocks import ResidualBlock, DenseBlock
+from .cnn1d import CNN1D, DilatedCNN1D, CNN1DRegressor
+from .resnet1d import FaultResNet1D, ResNet1D
 
-__all__ = ['CNN1D', 'CNN1DRegressor', 'ResNet1D', 'ResNet1DRegressor', 
-           'ResidualBlock', 'DenseBlock']
+__all__ = [
+    'CNN1D', 'DilatedCNN1D', 'CNN1DRegressor',
+    'FaultResNet1D', 'ResNet1D',
+]
