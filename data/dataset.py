@@ -1,201 +1,259 @@
 """
 PyTorch Dataset for Short-Circuit Fault Oscillogram Data
 
-Format:
-    CSV with columns:
-    - Column 0: Fault distance in kilometers
-    - Columns 1-400: Instantaneous signal values (100ms pre-fault + 300ms fault)
+Expected file layout:
+    data/oscillograms/
+        1A_0.5km.csv
+        1A_1.0km.csv
+        ...
+
+Each CSV file represents ONE fault event (one training sample).
+
+CSV format (rows = time steps, 7 columns):
+    distance_km  | CT1IA | CT1IB | CT1IC | S1)BUS1UA | S1)BUS1UB | S1)BUS1UC
+    0.5          | ...   | ...   | ...   | ...       | ...       | ...
+    0.5          | ...   | ...   | ...   | ...       | ...       | ...
+    ...
+
+Signal channels:
+    0: CT1IA  - Phase A current  [A]  (small magnitude ~0.07-260)
+    1: CT1IB  - Phase B current  [A]
+    2: CT1IC  - Phase C current  [A]
+    3: BUS1UA - Phase A voltage  [kV] (large magnitude ~100)
+    4: BUS1UB - Phase B voltage  [kV]
+    5: BUS1UC - Phase C voltage  [kV]
+
+Outputs:
+    signal tensor : (NUM_CHANNELS, SEQ_LENGTH)  e.g. (6, 400)
+    distance      : scalar [km]
 """
 
+import os
+import glob
 import numpy as np
 import pandas as pd
 import torch
-from torch.utils.data import Dataset
+from torch.utils.data import Dataset, DataLoader, random_split
 from sklearn.preprocessing import StandardScaler, MinMaxScaler
-import os
+from typing import Optional, Tuple, Dict
+
+# Known column names in the CSV
+DISTANCE_COL = 'distance_km'
+SIGNAL_COLS = ['CT1IA', 'CT1IB', 'CT1IC', 'S1) BUS1UA', 'S1) BUS1UB', 'S1) BUS1UC']
 
 
 class FaultDataset(Dataset):
     """
-    PyTorch Dataset for short-circuit fault detection.
-    
-    Loads oscillogram data from CSV and provides normalized signal/distance pairs.
+    Loads a directory of oscillogram CSV files.
+    Each file => one (signal, distance) sample.
+
+    signal shape : (NUM_CHANNELS, SEQ_LENGTH)  ready for Conv1d
+    distance     : scalar float32 (optionally normalized to [0,1])
     """
-    
-    def __init__(self, csv_path, seq_length=400, normalize=True, 
-                 scaler_signal=None, scaler_distance=None):
+
+    def __init__(
+        self,
+        data_dir: str,
+        seq_length: int = 400,
+        num_channels: int = 6,
+        normalize: bool = True,
+        signal_scalers: Optional[list] = None,   # list of NUM_CHANNELS fitted StandardScalers
+        distance_scaler: Optional[MinMaxScaler] = None,
+    ):
         """
         Args:
-            csv_path (str): Path to oscillogram CSV file
-            seq_length (int): Expected signal length (should be 400)
-            normalize (bool): Whether to normalize data
-            scaler_signal (StandardScaler): Pre-fitted scaler for signals (for test set)
-            scaler_distance (MinMaxScaler): Pre-fitted scaler for distances (for test set)
+            data_dir       : folder containing *.csv oscillogram files
+            seq_length     : number of time steps expected in each file
+            num_channels   : number of signal channels (default 6)
+            normalize      : apply per-channel StandardScaler to signals
+                             and MinMaxScaler to distance
+            signal_scalers : pre-fitted scalers (pass when creating test set
+                             to avoid data leakage)
+            distance_scaler: pre-fitted MinMaxScaler for distance
         """
-        
-        # Check if file exists
-        if not os.path.exists(csv_path):
-            raise FileNotFoundError(f"CSV file not found: {csv_path}")
-        
-        # Load CSV
-        print(f"Loading data from {csv_path}...")
-        self.data = pd.read_csv(csv_path)
-        
-        if self.data.shape[0] == 0:
-            raise ValueError("CSV file is empty")
-        
-        # Extract distance (first column) and signals (remaining columns)
-        self.distances = self.data.iloc[:, 0].values.astype(np.float32)
-        self.signals = self.data.iloc[:, 1:].values.astype(np.float32)
-        
-        # Validate shape
-        if self.signals.shape[1] != seq_length:
-            raise ValueError(
-                f"Expected {seq_length} signal columns, got {self.signals.shape[1]}"
+        if not os.path.isdir(data_dir):
+            raise FileNotFoundError(
+                f"Data directory not found: {data_dir}\n"
+                "Create it and place your oscillogram CSV files inside."
             )
-        
+
+        csv_files = sorted(glob.glob(os.path.join(data_dir, '*.csv')))
+        if len(csv_files) == 0:
+            raise FileNotFoundError(
+                f"No CSV files found in {data_dir}\n"
+                "Expected files like: 1A_0.5km.csv, 1B_2.0km.csv, ..."
+            )
+
+        print(f"Loading {len(csv_files)} oscillogram files from {data_dir} ...")
+
+        signals_list: list[np.ndarray] = []   # each: (NUM_CHANNELS, seq_length)
+        distances_list: list[float] = []
+        skipped = 0
+
+        for fpath in csv_files:
+            try:
+                df = pd.read_csv(fpath)
+
+                # ---- validate columns ----
+                missing = [c for c in [DISTANCE_COL] + SIGNAL_COLS if c not in df.columns]
+                if missing:
+                    print(f"  [SKIP] {os.path.basename(fpath)} - missing columns: {missing}")
+                    skipped += 1
+                    continue
+
+                # ---- target: constant in the whole file ----
+                distance = float(df[DISTANCE_COL].iloc[0])
+
+                # ---- signals: (T, 6) -> (6, T) ----
+                sig = df[SIGNAL_COLS].values.astype(np.float32)  # (T, 6)
+
+                # Pad or trim to seq_length
+                T = sig.shape[0]
+                if T < seq_length:
+                    pad = np.zeros((seq_length - T, sig.shape[1]), dtype=np.float32)
+                    sig = np.vstack([sig, pad])
+                elif T > seq_length:
+                    sig = sig[:seq_length, :]
+
+                sig = sig.T  # (6, seq_length)
+
+                signals_list.append(sig)
+                distances_list.append(distance)
+
+            except Exception as e:
+                print(f"  [SKIP] {os.path.basename(fpath)} - error: {e}")
+                skipped += 1
+
+        if len(signals_list) == 0:
+            raise ValueError("No valid samples loaded. Check your CSV files.")
+
+        print(f"  Loaded {len(signals_list)} samples  ({skipped} skipped)")
+
         self.seq_length = seq_length
-        self.num_samples = len(self.distances)
-        
-        print(f"  Loaded {self.num_samples} samples")
-        print(f"  Signal shape: {self.signals.shape}")
-        print(f"  Distance range: [{self.distances.min():.2f}, {self.distances.max():.2f}] km")
-        
+        self.num_channels = num_channels
+        self.num_samples = len(signals_list)
+
+        # signals: (N, 6, seq_length)  /  distances: (N,)
+        self.signals = np.stack(signals_list, axis=0)     # (N, 6, T)
+        self.distances = np.array(distances_list, dtype=np.float32)  # (N,)
+
+        print(f"  Signal tensor shape  : {self.signals.shape}")
+        print(f"  Distance range       : [{self.distances.min():.2f}, {self.distances.max():.2f}] km")
+
         # ============ NORMALIZATION ============
+        # Per-channel StandardScaler: each channel has its own mean/std
+        # This is critical because currents (~0.07-260 A) and voltages (~100 kV)
+        # live on completely different scales.
         if normalize:
-            # If scaler not provided, fit on this data
-            if scaler_signal is None:
-                self.scaler_signal = StandardScaler()
-                self.signals = self.scaler_signal.fit_transform(self.signals)
+            if signal_scalers is None:
+                self.signal_scalers = []
+                for ch in range(self.signals.shape[1]):
+                    scaler = StandardScaler()
+                    # signals[:, ch, :] shape: (N, T) -> fit on flattened
+                    flat = self.signals[:, ch, :].reshape(-1, 1)
+                    scaler.fit(flat)
+                    self.signals[:, ch, :] = scaler.transform(flat).reshape(
+                        self.num_samples, self.seq_length
+                    )
+                    self.signal_scalers.append(scaler)
             else:
-                self.scaler_signal = scaler_signal
-                self.signals = self.scaler_signal.transform(self.signals)
-            
-            # Normalize distances to [0, 1]
-            if scaler_distance is None:
-                self.scaler_distance = MinMaxScaler()
-                self.distances = self.scaler_distance.fit_transform(
+                self.signal_scalers = signal_scalers
+                for ch, scaler in enumerate(signal_scalers):
+                    flat = self.signals[:, ch, :].reshape(-1, 1)
+                    self.signals[:, ch, :] = scaler.transform(flat).reshape(
+                        self.num_samples, self.seq_length
+                    )
+
+            if distance_scaler is None:
+                self.distance_scaler = MinMaxScaler()
+                self.distances = self.distance_scaler.fit_transform(
                     self.distances.reshape(-1, 1)
                 ).flatten()
             else:
-                self.scaler_distance = scaler_distance
-                self.distances = self.scaler_distance.transform(
+                self.distance_scaler = distance_scaler
+                self.distances = self.distance_scaler.transform(
                     self.distances.reshape(-1, 1)
                 ).flatten()
-            
-            print("  ✓ Data normalized")
+
+            print("  Per-channel normalization applied")
         else:
-            self.scaler_signal = None
-            self.scaler_distance = None
-    
-    def __len__(self):
-        """Return number of samples in dataset."""
+            self.signal_scalers = None
+            self.distance_scaler = None
+
+    # ------------------------------------------------------------------
+    def __len__(self) -> int:
         return self.num_samples
-    
-    def __getitem__(self, idx):
+
+    def __getitem__(self, idx: int) -> Tuple[torch.Tensor, torch.Tensor]:
         """
-        Get one sample.
-        
-        Args:
-            idx: Sample index
-        
         Returns:
-            signal: (1, seq_length) - 1D signal reshaped for Conv1d
-            distance: scalar - normalized distance
+            signal   : FloatTensor  (NUM_CHANNELS, SEQ_LENGTH)
+            distance : FloatTensor  scalar wrapped in shape (1,)
         """
-        # Signal: (seq_length,) -> (1, seq_length) for Conv1d
-        signal = torch.FloatTensor(self.signals[idx]).unsqueeze(0)
-        
-        # Distance: scalar
-        distance = torch.FloatTensor([self.distances[idx]])
-        
+        signal = torch.from_numpy(self.signals[idx])          # (6, T)
+        distance = torch.tensor([self.distances[idx]], dtype=torch.float32)
         return signal, distance
-    
-    def get_raw_sample(self, idx):
-        """
-        Get un-normalized sample for debugging.
-        
-        Args:
-            idx: Sample index
-        
-        Returns:
-            signal: Original signal values
-            distance: Original distance in km
-        """
-        if self.scaler_signal is not None:
-            signal = self.scaler_signal.inverse_transform([self.signals[idx]])[0]
-            distance = self.scaler_distance.inverse_transform(
-                [[self.distances[idx]]]
-            )[0][0]
-        else:
-            signal = self.signals[idx]
-            distance = self.distances[idx]
-        
-        return signal, distance
+
+    def inverse_transform_distance(self, normalized: np.ndarray) -> np.ndarray:
+        """Convert normalized predictions back to km."""
+        if self.distance_scaler is not None:
+            return self.distance_scaler.inverse_transform(
+                normalized.reshape(-1, 1)
+            ).flatten()
+        return normalized
 
 
 class DataLoaderFactory:
-    """
-    Factory for creating train/test DataLoaders with proper preprocessing.
-    """
-    
+    """Factory for creating train/test DataLoaders with proper preprocessing."""
+
     @staticmethod
-    def create_loaders(csv_path, cfg):
+    def create_loaders(
+        data_dir: str,
+        cfg,
+    ) -> Tuple[DataLoader, DataLoader, Dict]:
         """
         Create train and test DataLoaders.
-        
+
         Args:
-            csv_path (str): Path to CSV file
-            cfg: Config object with BATCH_SIZE, TRAIN_SPLIT, etc.
-        
+            data_dir : directory with oscillogram CSV files
+            cfg      : Config object
+
         Returns:
-            tuple: (train_loader, test_loader, scalers_dict)
+            (train_loader, test_loader, scalers_dict)
         """
-        from torch.utils.data import random_split, DataLoader
-        
-        # Load full dataset
         full_dataset = FaultDataset(
-            csv_path,
+            data_dir=data_dir,
             seq_length=cfg.SEQ_LENGTH,
-            normalize=cfg.NORMALIZE_DATA
+            num_channels=cfg.NUM_CHANNELS,
+            normalize=cfg.NORMALIZE_DATA,
         )
-        
-        # Get scalers for later use
+
         scalers = {
-            'signal': full_dataset.scaler_signal,
-            'distance': full_dataset.scaler_distance
+            'signal': full_dataset.signal_scalers,
+            'distance': full_dataset.distance_scaler,
         }
-        
-        # Split into train/test
+
         train_size = int(cfg.TRAIN_SPLIT * len(full_dataset))
         test_size = len(full_dataset) - train_size
-        
+
         train_dataset, test_dataset = random_split(
             full_dataset,
             [train_size, test_size],
-            generator=torch.Generator().manual_seed(42)  # For reproducibility
+            generator=torch.Generator().manual_seed(cfg.SEED),
         )
-        
-        # Create DataLoaders
+
+        pin = cfg.DEVICE == 'cuda'
         train_loader = DataLoader(
-            train_dataset,
-            batch_size=cfg.BATCH_SIZE,
-            shuffle=True,
-            num_workers=0,  # Set > 0 if on Linux with multiple cores
-            pin_memory=True if cfg.DEVICE == 'cuda' else False
+            train_dataset, batch_size=cfg.BATCH_SIZE,
+            shuffle=True, num_workers=0, pin_memory=pin
         )
-        
         test_loader = DataLoader(
-            test_dataset,
-            batch_size=cfg.BATCH_SIZE,
-            shuffle=False,
-            num_workers=0,
-            pin_memory=True if cfg.DEVICE == 'cuda' else False
+            test_dataset, batch_size=cfg.BATCH_SIZE,
+            shuffle=False, num_workers=0, pin_memory=pin
         )
-        
-        print(f"\n✅ Data split:")
-        print(f"   Train: {train_size} samples")
-        print(f"   Test:  {test_size} samples")
-        print(f"   Batch size: {cfg.BATCH_SIZE}")
-        
+
+        print(f"\n  Train : {train_size} samples")
+        print(f"  Test  : {test_size} samples")
+        print(f"  Batch : {cfg.BATCH_SIZE}")
+
         return train_loader, test_loader, scalers
