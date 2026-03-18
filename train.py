@@ -1,4 +1,4 @@
-"""
+﻿"""
 Training script for Fault Distance Estimation CNN.
 
 Usage:
@@ -7,9 +7,7 @@ Usage:
     python train.py --data-dir data/oscillograms --model resnet1d
 """
 
-import argparse
-import os
-import random
+import argparse, os, random
 import numpy as np
 import torch
 import torch.nn as nn
@@ -43,6 +41,16 @@ class Trainer:
             cfg.DATA_DIR, cfg
         )
 
+        # --- Enhanced startup logging ---
+        train_n = len(self.train_loader.dataset)
+        val_n   = len(self.test_loader.dataset)
+        logging.info(f"Dataset        : train={train_n} samples | val={val_n} samples")
+        logging.info(f"Device         : {cfg.DEVICE}")
+        if self.scalers['distance'] is not None:
+            dmin = self.scalers['distance'].data_min_[0]
+            dmax = self.scalers['distance'].data_max_[0]
+            logging.info(f"Distance range : [{dmin:.2f}, {dmax:.2f}] km (scaler)")
+
         logging.info(f"Initializing {cfg.MODEL_TYPE} model...")
         self.model = self._build_model().to(self.device)
         self._log_model_info()
@@ -56,7 +64,6 @@ class Trainer:
         self.patience_counter = 0
         self.current_epoch = 0
 
-    # ------------------------------------------------------------------
     def _set_seeds(self, seed):
         random.seed(seed)
         np.random.seed(seed)
@@ -65,42 +72,25 @@ class Trainer:
             torch.cuda.manual_seed_all(seed)
 
     def _build_model(self):
-        """Build model based on configuration."""
         if self.cfg.MODEL_TYPE == 'cnn1d':
-            return CNN1D(
-                seq_length=self.cfg.SEQ_LENGTH,
-                num_channels=self.cfg.NUM_CHANNELS,
-                num_filters=self.cfg.NUM_FILTERS,
-                kernel_size=self.cfg.KERNEL_SIZE,
-                dropout=self.cfg.DROPOUT,
-            )
+            return CNN1D(seq_length=self.cfg.SEQ_LENGTH, num_channels=self.cfg.NUM_CHANNELS,
+                         num_filters=self.cfg.NUM_FILTERS, kernel_size=self.cfg.KERNEL_SIZE,
+                         dropout=self.cfg.DROPOUT)
         elif self.cfg.MODEL_TYPE == 'dilated_cnn1d':
-            return DilatedCNN1D(
-                seq_length=self.cfg.SEQ_LENGTH,
-                num_channels=self.cfg.NUM_CHANNELS,
-                num_filters=self.cfg.NUM_FILTERS,
-                kernel_size=self.cfg.KERNEL_SIZE,
-                dropout=self.cfg.DROPOUT,
-            )
+            return DilatedCNN1D(seq_length=self.cfg.SEQ_LENGTH, num_channels=self.cfg.NUM_CHANNELS,
+                                num_filters=self.cfg.NUM_FILTERS, kernel_size=self.cfg.KERNEL_SIZE,
+                                dropout=self.cfg.DROPOUT)
         elif self.cfg.MODEL_TYPE == 'resnet1d':
-            # ResNet1D uses a cfg object with additional attributes
-            # Extend cfg with ResNet-specific fields if absent
-            if not hasattr(self.cfg, 'BASE_CHANNELS'):
-                self.cfg.BASE_CHANNELS = self.cfg.NUM_FILTERS
-            if not hasattr(self.cfg, 'DEPTH'):
-                self.cfg.DEPTH = 3
-            if not hasattr(self.cfg, 'DROPOUT_RATE'):
-                self.cfg.DROPOUT_RATE = self.cfg.DROPOUT
-            if not hasattr(self.cfg, 'USE_SE_BLOCK'):
-                self.cfg.USE_SE_BLOCK = True
-            if not hasattr(self.cfg, 'TASK'):
-                self.cfg.TASK = 'regression'
+            if not hasattr(self.cfg, 'BASE_CHANNELS'): self.cfg.BASE_CHANNELS = self.cfg.NUM_FILTERS
+            if not hasattr(self.cfg, 'DEPTH'):          self.cfg.DEPTH = 3
+            if not hasattr(self.cfg, 'DROPOUT_RATE'):   self.cfg.DROPOUT_RATE = self.cfg.DROPOUT
+            if not hasattr(self.cfg, 'USE_SE_BLOCK'):   self.cfg.USE_SE_BLOCK = True
+            if not hasattr(self.cfg, 'TASK'):           self.cfg.TASK = 'regression'
             return ResNet1D(self.cfg)
-        else:
-            raise ValueError(f"Unknown model type: {self.cfg.MODEL_TYPE}")
+        raise ValueError(f"Unknown model: {self.cfg.MODEL_TYPE}")
 
     def _log_model_info(self):
-        total = sum(p.numel() for p in self.model.parameters())
+        total     = sum(p.numel() for p in self.model.parameters())
         trainable = sum(p.numel() for p in self.model.parameters() if p.requires_grad)
         logging.info(f"Model        : {self.cfg.MODEL_TYPE}")
         logging.info(f"Channels     : {self.cfg.NUM_CHANNELS}")
@@ -132,13 +122,11 @@ class Trainer:
             return ExponentialLR(self.optimizer, gamma=0.95)
         return None
 
-    # ------------------------------------------------------------------
-    def train_epoch(self) -> float:
+    def train_epoch(self):
         self.model.train()
         total_loss, n = 0.0, 0
-        pbar = tqdm(self.train_loader,
-                    desc=f'Epoch {self.current_epoch + 1}/{self.cfg.NUM_EPOCHS}')
-        for batch_idx, (signals, distances) in enumerate(pbar):
+        pbar = tqdm(self.train_loader, desc=f'Epoch {self.current_epoch+1}/{self.cfg.NUM_EPOCHS}')
+        for signals, distances in pbar:
             signals, distances = signals.to(self.device), distances.to(self.device)
             self.optimizer.zero_grad()
             loss = self.criterion(self.model(signals), distances)
@@ -146,8 +134,7 @@ class Trainer:
             if self.cfg.GRADIENT_CLIP:
                 nn.utils.clip_grad_norm_(self.model.parameters(), self.cfg.GRADIENT_CLIP)
             self.optimizer.step()
-            total_loss += loss.item()
-            n += 1
+            total_loss += loss.item(); n += 1
             pbar.set_postfix({'loss': f'{loss.item():.6f}'})
         return total_loss / n
 
@@ -159,95 +146,84 @@ class Trainer:
             for signals, distances in tqdm(self.test_loader, desc='Validation'):
                 signals, distances = signals.to(self.device), distances.to(self.device)
                 preds = self.model(signals)
-                total_loss += self.criterion(preds, distances).item()
-                n += 1
+                total_loss += self.criterion(preds, distances).item(); n += 1
                 y_true.extend(distances.cpu().numpy().flatten())
                 y_pred.extend(preds.cpu().numpy().flatten())
-
         y_true, y_pred = np.array(y_true), np.array(y_pred)
         scaler = self.scalers['distance']
         if scaler is not None:
-            y_true = scaler.inverse_transform(y_true.reshape(-1, 1)).flatten()
-            y_pred = scaler.inverse_transform(y_pred.reshape(-1, 1)).flatten()
-
+            y_true = scaler.inverse_transform(y_true.reshape(-1,1)).flatten()
+            y_pred = scaler.inverse_transform(y_pred.reshape(-1,1)).flatten()
         mae = np.mean(np.abs(y_true - y_pred))
         self.history['val_loss'].append(total_loss / n)
         self.history['val_mae'].append(mae)
         return total_loss / n, mae, y_true, y_pred
 
     def save_checkpoint(self, is_best=False):
-        fname = 'best_model.pth' if is_best else f'checkpoint_epoch_{self.current_epoch + 1}.pth'
-        path = os.path.join(self.cfg.SAVE_DIR, fname)
-        torch.save({
-            'epoch': self.current_epoch,
-            'model_state_dict': self.model.state_dict(),
-            'optimizer_state_dict': self.optimizer.state_dict(),
-            'config': self.cfg,
-            'scalers': self.scalers,
-        }, path)
+        fname = 'best_model.pth' if is_best else f'checkpoint_epoch_{self.current_epoch+1}.pth'
+        path  = os.path.join(self.cfg.SAVE_DIR, fname)
+        torch.save({'epoch': self.current_epoch, 'model_state_dict': self.model.state_dict(),
+                    'optimizer_state_dict': self.optimizer.state_dict(),
+                    'config': self.cfg, 'scalers': self.scalers}, path)
         logging.info(f"Checkpoint saved -> {path}")
 
     def train(self):
-        logging.info("Starting training...\n")
+        train_n = len(self.train_loader.dataset)
+        val_n   = len(self.test_loader.dataset)
+        logging.info("=" * 60)
+        logging.info("Starting training")
+        logging.info(f"  Train samples : {train_n}")
+        logging.info(f"  Val   samples : {val_n}")
+        logging.info(f"  Epochs        : {self.cfg.NUM_EPOCHS}")
+        logging.info(f"  Batch size    : {self.cfg.BATCH_SIZE}")
+        logging.info(f"  Device        : {self.cfg.DEVICE}")
+        logging.info("=" * 60)
+
         for epoch in range(self.cfg.NUM_EPOCHS):
             self.current_epoch = epoch
             train_loss = self.train_epoch()
             self.history['train_loss'].append(train_loss)
-
             val_loss, mae, y_true, y_pred = self.validate_epoch()
             self.logger.log_epoch(epoch, train_loss, val_loss, {'MAE': mae})
-
-            if self.scheduler:
-                self.scheduler.step()
-
+            if self.scheduler: self.scheduler.step()
             is_best = val_loss < self.best_val_loss
             if is_best:
                 self.best_val_loss = val_loss
                 self.patience_counter = 0
-                if self.cfg.SAVE_BEST_ONLY:
-                    self.save_checkpoint(is_best=True)
+                if self.cfg.SAVE_BEST_ONLY: self.save_checkpoint(is_best=True)
             else:
                 self.patience_counter += 1
-
             if (epoch + 1) % self.cfg.SAVE_EVERY_N_EPOCHS == 0:
                 self.save_checkpoint()
-
             if self.cfg.EARLY_STOPPING and self.patience_counter >= self.cfg.PATIENCE:
-                logging.info(f"Early stopping after {epoch + 1} epochs")
+                logging.info(f"Early stopping after {epoch+1} epochs")
                 break
+            logging.info(f"Epoch {epoch+1}: train={train_loss:.6f}  val={val_loss:.6f}  MAE={mae:.4f} km")
 
-            logging.info(f"Epoch {epoch + 1}: "
-                         f"train={train_loss:.6f}  val={val_loss:.6f}  MAE={mae:.4f} km")
-
-        plot_training_history(self.history,
-                              os.path.join(self.cfg.LOG_DIR, 'training_history.png'))
-        plot_predictions(y_true, y_pred,
-                         os.path.join(self.cfg.LOG_DIR, 'predictions.png'))
+        plot_training_history(self.history, os.path.join(self.cfg.LOG_DIR, 'training_history.png'))
+        plot_predictions(y_true, y_pred, os.path.join(self.cfg.LOG_DIR, 'predictions.png'))
         logging.info("Training complete.")
 
 
 def main():
-    parser = argparse.ArgumentParser(description='Train Fault Distance Estimation Model')
-    parser.add_argument('--epochs', type=int)
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--epochs',     type=int)
     parser.add_argument('--batch-size', type=int)
-    parser.add_argument('--model', type=str, default='cnn1d',
-                        choices=['cnn1d', 'dilated_cnn1d', 'resnet1d'])
-    parser.add_argument('--lr', type=float)
-    parser.add_argument('--data-dir', type=str)
-    parser.add_argument('--device', type=str, choices=['cuda', 'cpu'])
+    parser.add_argument('--model',      type=str, default='cnn1d',
+                        choices=['cnn1d','dilated_cnn1d','resnet1d'])
+    parser.add_argument('--lr',         type=float)
+    parser.add_argument('--data-dir',   type=str)
+    parser.add_argument('--device',     type=str, choices=['cuda','cpu'])
     args = parser.parse_args()
-
     kwargs = {}
-    if args.epochs:    kwargs['NUM_EPOCHS'] = args.epochs
-    if args.batch_size: kwargs['BATCH_SIZE'] = args.batch_size
-    if args.model:     kwargs['MODEL_TYPE'] = args.model
-    if args.lr:        kwargs['LEARNING_RATE'] = args.lr
-    if args.data_dir:  kwargs['DATA_DIR'] = args.data_dir
-    if args.device:    kwargs['DEVICE'] = args.device
-
+    if args.epochs:     kwargs['NUM_EPOCHS']    = args.epochs
+    if args.batch_size: kwargs['BATCH_SIZE']    = args.batch_size
+    if args.model:      kwargs['MODEL_TYPE']    = args.model
+    if args.lr:         kwargs['LEARNING_RATE'] = args.lr
+    if args.data_dir:   kwargs['DATA_DIR']      = args.data_dir
+    if args.device:     kwargs['DEVICE']        = args.device
     cfg = get_config(**kwargs) if kwargs else Config()
     Trainer(cfg).train()
-
 
 if __name__ == '__main__':
     main()
