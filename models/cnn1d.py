@@ -6,6 +6,7 @@ Input tensor shape : (batch_size, NUM_CHANNELS, SEQ_LENGTH)
 Output             : (batch_size, 1)  -- regression distance in km (normalized)
 """
 
+import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -174,7 +175,6 @@ class CNN1DRegressor:
         return self.model
 
     def predict(self, x: torch.Tensor) -> np.ndarray:
-        import numpy as np
         self.model.eval()
         with torch.no_grad():
             if x.dim() == 2:           # (C, T) -> (1, C, T)
