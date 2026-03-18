@@ -34,7 +34,7 @@ class FaultDistancePredictor:
         
         # Load checkpoint
         print(f"Loading checkpoint from {checkpoint_path}...")
-        checkpoint = torch.load(checkpoint_path, map_location=self.device)
+        checkpoint = torch.load(checkpoint_path, map_location=self.device, weights_only=False)
         
         self.cfg = checkpoint.get('config', Config())
         self.scalers = checkpoint.get('scalers', {})
@@ -171,7 +171,7 @@ class FaultDistancePredictor:
             print(f"{'='*60}")
             print(f"MAE:  {metrics['mae']:.4f} km")
             print(f"RMSE: {metrics['rmse']:.4f} km")
-            print(f"R²:   {metrics['r2']:.6f}")
+            print(f"R\u00b2:   {metrics['r2']:.6f}")
             print(f"MAPE: {metrics['mape']:.2f}%")
             print(f"{'='*60}\n")
             
