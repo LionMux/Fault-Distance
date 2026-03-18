@@ -42,7 +42,7 @@ class TimeShiftAugmentation:
     # Key index where most fault action happens (roughly 200 out of 401 rows)
     FAULT_EVENT_START = 200
     
-    def __init__(self, seq_length: int = 401):
+    def __init__(self, seq_length: int = 400):
         """
         Args:
             seq_length: Expected number of rows in output (default 401)
@@ -132,7 +132,7 @@ class GaussianNoiseAugmentation:
         'very_clean': 40,     # Lab conditions
     }
     
-    def __init__(self, seq_length: int = 401, num_channels: int = 6):
+    def __init__(self, seq_length: int = 400, num_channels: int = 6):
         """
         Args:
             seq_length: Number of rows (time steps)
@@ -217,7 +217,7 @@ class AugmentationPipeline:
     TIME_SHIFTS = [10, 20, 30, 40, 50]  # 5 shift variations (in rows)
     SNR_LEVELS = [1, 5, 10, 20, 40]     # 5 SNR levels (in dB)
     
-    def __init__(self, seq_length: int = 401, num_channels: int = 6, seed: int = 42):
+    def __init__(self, seq_length: int = 400, num_channels: int = 6, seed: int = 42):
         self.seq_length = seq_length
         self.num_channels = num_channels
         self.seed = seed
