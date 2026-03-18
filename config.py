@@ -16,8 +16,9 @@ class Config:
     DEVICE: str = 'cuda' if torch.cuda.is_available() else 'cpu'
 
     # ============ DATA PATHS ============
-    # Directory containing oscillogram CSV files (one file per fault event)
-    DATA_DIR: str = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'data', 'oscillograms')
+    # Directory containing oscillogram CSV files (one file per fault event).
+    # Kept separate from data/ Python package to avoid mixing .csv with .py files.
+    DATA_DIR: str = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'data', 'data_training')
     TRAIN_SPLIT: float = 0.8  # 80% train, 20% test
 
     # ============ DATA FORMAT ============

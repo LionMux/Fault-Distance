@@ -2,12 +2,15 @@
 PyTorch Dataset for Short-Circuit Fault Oscillogram Data
 
 Expected file layout:
-    data/oscillograms/
+    data/data_training/
         1A_0.5km.csv
         1A_1.0km.csv
         ...
 
 Each CSV file represents ONE fault event (one training sample).
+The data_training/ subfolder is intentionally separate from the data/ Python
+package (which contains dataset.py, preprocessing.py, __init__.py) so that
+CSV files and source files never get mixed together.
 
 CSV format (rows = time steps, 7 columns):
     distance_km  | CT1IA | CT1IB | CT1IC | S1)BUS1UA | S1)BUS1UB | S1)BUS1UC
@@ -63,6 +66,7 @@ class FaultDataset(Dataset):
         """
         Args:
             data_dir       : folder containing *.csv oscillogram files
+                             (default: data/data_training/)
             seq_length     : number of time steps expected in each file
             num_channels   : number of signal channels (default 6)
             normalize      : apply per-channel StandardScaler to signals
@@ -74,7 +78,10 @@ class FaultDataset(Dataset):
         if not os.path.isdir(data_dir):
             raise FileNotFoundError(
                 f"Data directory not found: {data_dir}\n"
-                "Create it and place your oscillogram CSV files inside."
+                f"Create it and place your oscillogram CSV files inside:\n"
+                f"  {data_dir}/1A_0.5km.csv\n"
+                f"  {data_dir}/1A_1.0km.csv\n"
+                f"  ..."
             )
 
         csv_files = sorted(glob.glob(os.path.join(data_dir, '*.csv')))
@@ -86,8 +93,8 @@ class FaultDataset(Dataset):
 
         print(f"Loading {len(csv_files)} oscillogram files from {data_dir} ...")
 
-        signals_list: list[np.ndarray] = []   # each: (NUM_CHANNELS, seq_length)
-        distances_list: list[float] = []
+        signals_list: list = []   # each: (NUM_CHANNELS, seq_length)
+        distances_list: list = []
         skipped = 0
 
         for fpath in csv_files:
@@ -149,7 +156,6 @@ class FaultDataset(Dataset):
                 self.signal_scalers = []
                 for ch in range(self.signals.shape[1]):
                     scaler = StandardScaler()
-                    # signals[:, ch, :] shape: (N, T) -> fit on flattened
                     flat = self.signals[:, ch, :].reshape(-1, 1)
                     scaler.fit(flat)
                     self.signals[:, ch, :] = scaler.transform(flat).reshape(
@@ -216,6 +222,7 @@ class DataLoaderFactory:
 
         Args:
             data_dir : directory with oscillogram CSV files
+                       (cfg.DATA_DIR -> data/data_training/ by default)
             cfg      : Config object
 
         Returns:

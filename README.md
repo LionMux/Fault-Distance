@@ -4,17 +4,33 @@
 
 ---
 
+## Структура проекта
+
+```
+Fault-Distance/
+├── data/
+│   ├── __init__.py
+│   ├── dataset.py          # PyTorch Dataset + DataLoaderFactory
+│   ├── preprocessing.py    # Вспомогательная предобработка
+│   └── data_training/      # ← CSV-файлы осциллограмм (не смешивать с .py)
+│       ├── 1A_0.5km.csv
+│       ├── 1A_1.0km.csv
+│       └── ...
+├── models/
+│   ├── cnn1d.py
+│   ├── resnet1d.py
+│   └── blocks.py
+├── utils/
+├── config.py
+├── train.py
+└── README.md
+```
+
+---
+
 ## Формат входных данных
 
 Каждый файл CSV — **один осциллограф** (одно событие КЗ).
-
-```
-data/oscillograms/
-    1A_0.5km.csv
-    1A_1.0km.csv
-    1B_2.0km.csv
-    ...
-```
 
 ### Структура CSV-файла
 
@@ -39,7 +55,7 @@ data/oscillograms/
 pip install -r requirements.txt
 
 # 2. Положить CSV-файлы в
-data/oscillograms/
+data/data_training/
 
 # 3. Запустить обучение
 python train.py
@@ -56,7 +72,7 @@ python train.py --model resnet1d --epochs 200
 | Модель | Входной тензор | Описание |
 |---|---|---|
 | `cnn1d` | `(B, 6, 400)` | 3-блочный 1D-CNN, быстро обучается |
-| `dilated_cnn1d` | `(B, 6, 400)` | Расширенные свёртки, больший receptive field |
+| `dilated_cnn1d` | `(B, 6, 400)` | Расширенные свёртки, большой receptive field |
 | `resnet1d` | `(B, 6, 400)` | ResNet с SE-блоками, лучшая точность |
 
 ---
@@ -66,7 +82,7 @@ python train.py --model resnet1d --epochs 200
 ```python
 NUM_CHANNELS = 6       # Ia, Ib, Ic, Ua, Ub, Uc
 SEQ_LENGTH   = 400     # Временных отсчётов на файл
-DATA_DIR     = 'data/oscillograms'   # Папка с CSV
+DATA_DIR     = 'data/data_training'  # Папка с CSV (изолирована от .py файлов)
 MODEL_TYPE   = 'cnn1d'
 BATCH_SIZE   = 32
 NUM_EPOCHS   = 100
