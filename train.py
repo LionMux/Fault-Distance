@@ -1,10 +1,5 @@
 ﻿"""
 Training script for Fault Distance Estimation CNN.
-
-Usage:
-    python train.py
-    python train.py --epochs 200 --batch-size 64 --model cnn1d
-    python train.py --data-dir data/oscillograms --model resnet1d
 """
 
 import argparse, os, random
@@ -15,6 +10,7 @@ from torch.optim import Adam, SGD
 from torch.optim.lr_scheduler import CosineAnnealingLR, LinearLR, ExponentialLR
 from tqdm import tqdm
 import logging
+from datetime import datetime
 
 from config import Config, get_config
 from data.dataset import FaultDataset, DataLoaderFactory
@@ -33,7 +29,13 @@ class Trainer:
         self.device = torch.device(cfg.DEVICE)
         self._set_seeds(cfg.SEED)
 
-        self.logger = TrainingLogger(output_dir=cfg.LOG_DIR)
+        # --- Create unique run directory: logs/run_YYYYMMDD_HHMMSS/ ---
+        self.run_timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+        self.run_dir = os.path.join(cfg.LOG_DIR, f'run_{self.run_timestamp}')
+        os.makedirs(self.run_dir, exist_ok=True)
+
+        # TrainingLogger writes .log into run_dir
+        self.logger = TrainingLogger(output_dir=self.run_dir)
         self.logger.log_config(cfg)
 
         logging.info("Loading data...")
@@ -41,7 +43,6 @@ class Trainer:
             cfg.DATA_DIR, cfg
         )
 
-        # --- Enhanced startup logging ---
         train_n = len(self.train_loader.dataset)
         val_n   = len(self.test_loader.dataset)
         logging.info(f"Dataset        : train={train_n} samples | val={val_n} samples")
@@ -177,6 +178,7 @@ class Trainer:
         logging.info(f"  Epochs        : {self.cfg.NUM_EPOCHS}")
         logging.info(f"  Batch size    : {self.cfg.BATCH_SIZE}")
         logging.info(f"  Device        : {self.cfg.DEVICE}")
+        logging.info(f"  Run dir       : {self.run_dir}")
         logging.info("=" * 60)
 
         for epoch in range(self.cfg.NUM_EPOCHS):
@@ -200,8 +202,13 @@ class Trainer:
                 break
             logging.info(f"Epoch {epoch+1}: train={train_loss:.6f}  val={val_loss:.6f}  MAE={mae:.4f} km")
 
-        plot_training_history(self.history, os.path.join(self.cfg.LOG_DIR, 'training_history.png'))
-        plot_predictions(y_true, y_pred, os.path.join(self.cfg.LOG_DIR, 'predictions.png'))
+        # --- Save plots INTO run_dir (same folder as .log) ---
+        plot_training_history(self.history,
+                              os.path.join(self.run_dir, 'training_history.png'))
+        plot_predictions(y_true, y_pred,
+                         os.path.join(self.run_dir, 'predictions.png'))
+
+        logging.info(f"Plots saved -> {self.run_dir}")
         logging.info("Training complete.")
 
 
