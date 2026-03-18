@@ -7,22 +7,19 @@ Usage:
 """
 
 import argparse
-import os
 import numpy as np
 import torch
 import pandas as pd
-from pathlib import Path
 
 from config import Config
 from models.cnn1d import CNN1D, DilatedCNN1D
 from models.resnet1d import ResNet1D
-from utils.metrics import MetricsCalculator
+
+SIGNAL_COLS = ['CT1IA', 'CT1IB', 'CT1IC', 'S1) BUS1UA', 'S1) BUS1UB', 'S1) BUS1UC']
+DISTANCE_COL = 'distance_km'
 
 
 class FaultDistancePredictor:
-    """
-    Predict fault distance from oscillograms.
-    """
 
     def __init__(self, checkpoint_path: str, device: str = 'cpu'):
         self.device = torch.device(device)
@@ -67,33 +64,31 @@ class FaultDistancePredictor:
         Predict from a single CSV file.
 
         Expected format:
-            Columns: distance_km, CT1IA, CT1IB, CT1IC, S1)BUS1UA, S1)BUS1UB, S1)BUS1UC
+            Columns: distance_km, CT1IA, CT1IB, CT1IC, S1) BUS1UA, S1) BUS1UB, S1) BUS1UC
             Rows   : SEQ_LENGTH time steps (e.g. 400)
-
-        Args:
-            csv_path  : path to CSV file
-            has_labels: if True, reads distance_km from first column and computes error
         """
         print(f"\nLoading CSV from {csv_path}...")
         df = pd.read_csv(csv_path)
 
         if has_labels:
-            distance_true = float(df.iloc[0, 0])          # same value in every row
-            signals = df.iloc[:, 1:].values.astype(np.float32)  # (SEQ_LENGTH, NUM_CHANNELS)
+            distance_true = float(df[DISTANCE_COL].iloc[0])
+            signals = df[SIGNAL_COLS].values.astype(np.float32)   # (SEQ_LENGTH, 6)
         else:
             distance_true = None
             signals = df.values.astype(np.float32)
 
-        # signals shape: (SEQ_LENGTH, NUM_CHANNELS) -> (NUM_CHANNELS, SEQ_LENGTH)
+        # (SEQ_LENGTH, NUM_CHANNELS) -> (NUM_CHANNELS, SEQ_LENGTH)
         signals = signals.T
-
         print(f"Signal shape: {signals.shape}  (channels x time steps)")
 
-        # Normalize per channel using saved scalers
-        signal_scalers = self.scalers.get('signals')
+        # Per-channel normalization using saved scalers
+        # scalers['signal'] is a list of NUM_CHANNELS StandardScaler objects
+        signal_scalers = self.scalers.get('signal')
         if signal_scalers:
             for ch_idx, scaler in enumerate(signal_scalers):
-                signals[ch_idx] = scaler.transform(signals[ch_idx].reshape(-1, 1)).flatten()
+                signals[ch_idx] = scaler.transform(
+                    signals[ch_idx].reshape(-1, 1)
+                ).flatten()
 
         # (NUM_CHANNELS, SEQ_LENGTH) -> (1, NUM_CHANNELS, SEQ_LENGTH)
         tensor = torch.FloatTensor(signals).unsqueeze(0).to(self.device)
@@ -101,7 +96,7 @@ class FaultDistancePredictor:
         with torch.no_grad():
             pred_norm = self.model(tensor).cpu().numpy().flatten()[0]
 
-        # Denormalize prediction
+        # Denormalize prediction using saved distance MinMaxScaler
         dist_scaler = self.scalers.get('distance')
         if dist_scaler:
             prediction = float(dist_scaler.inverse_transform([[pred_norm]])[0][0])
@@ -118,10 +113,7 @@ class FaultDistancePredictor:
             print(f"  Absolute error     : {error:.4f} km")
         print(f"{'='*50}\n")
 
-        return {
-            'prediction': prediction,
-            'true_distance': distance_true,
-        }
+        return {'prediction': prediction, 'true_distance': distance_true}
 
     def predict_from_npy(self, npy_path: str):
         print(f"Loading signals from {npy_path}...")
@@ -129,8 +121,14 @@ class FaultDistancePredictor:
         print(f"Loaded signals with shape: {signals.shape}")
 
         if signals.ndim == 2:
-            # assume (SEQ_LENGTH, NUM_CHANNELS) -> (NUM_CHANNELS, SEQ_LENGTH)
-            signals = signals.T
+            signals = signals.T  # (SEQ_LENGTH, NUM_CHANNELS) -> (NUM_CHANNELS, SEQ_LENGTH)
+
+        signal_scalers = self.scalers.get('signal')
+        if signal_scalers:
+            for ch_idx, scaler in enumerate(signal_scalers):
+                signals[ch_idx] = scaler.transform(
+                    signals[ch_idx].reshape(-1, 1)
+                ).flatten()
 
         tensor = torch.FloatTensor(signals).unsqueeze(0).to(self.device)
         with torch.no_grad():
@@ -143,8 +141,7 @@ class FaultDistancePredictor:
         return prediction
 
     def save_predictions(self, results: dict, output_path: str):
-        df = pd.DataFrame([results])
-        df.to_csv(output_path, index=False)
+        pd.DataFrame([results]).to_csv(output_path, index=False)
         print(f"\n✓ Predictions saved to {output_path}")
 
 
@@ -154,8 +151,8 @@ def main():
     parser.add_argument('--csv', type=str, default=None, help='Path to CSV oscillogram file')
     parser.add_argument('--signal', type=str, default=None, help='Path to .npy signal file')
     parser.add_argument('--has-labels', action='store_true',
-                        help='First column of CSV is distance_km (enables error reporting)')
-    parser.add_argument('--output', type=str, default=None, help='Output CSV path for predictions')
+                        help='CSV has distance_km column (enables error reporting)')
+    parser.add_argument('--output', type=str, default=None, help='Output CSV path')
     parser.add_argument('--device', type=str, default='cpu', choices=['cuda', 'cpu'])
 
     args = parser.parse_args()
