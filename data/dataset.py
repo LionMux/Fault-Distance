@@ -1,5 +1,4 @@
-"""
-PyTorch Dataset for Short-Circuit Fault Oscillogram Data
+"""PyTorch Dataset for Short-Circuit Fault Oscillogram Data
 
 Expected file layout:
     data/data_training/
@@ -13,24 +12,23 @@ package (which contains dataset.py, preprocessing.py, __init__.py) so that
 CSV files and source files never get mixed together.
 
 CSV format (rows = time steps, 7 columns):
-    distance_km  | CT1IA | CT1IB | CT1IC | S1)BUS1UA | S1)BUS1UB | S1)BUS1UC
-    0.5          | ...   | ...   | ...   | ...       | ...       | ...
-    0.5          | ...   | ...   | ...   | ...       | ...       | ...
+    distance_km | CT1IA | CT1IB | CT1IC | S1)BUS1UA | S1)BUS1UB | S1)BUS1UC
+    0.5         | ...   | ...   | ...   | ...       | ...       | ...
+    0.5         | ...   | ...   | ...   | ...       | ...       | ...
     ...
 
 Signal channels:
-    0: CT1IA  - Phase A current  [A]  (small magnitude ~0.07-260)
-    1: CT1IB  - Phase B current  [A]
-    2: CT1IC  - Phase C current  [A]
-    3: BUS1UA - Phase A voltage  [kV] (large magnitude ~100)
-    4: BUS1UB - Phase B voltage  [kV]
-    5: BUS1UC - Phase C voltage  [kV]
+    0: CT1IA   - Phase A current [A]  (small magnitude ~0.07-260)
+    1: CT1IB   - Phase B current [A]
+    2: CT1IC   - Phase C current [A]
+    3: BUS1UA  - Phase A voltage [kV] (large magnitude ~100)
+    4: BUS1UB  - Phase B voltage [kV]
+    5: BUS1UC  - Phase C voltage [kV]
 
 Outputs:
-    signal tensor : (NUM_CHANNELS, SEQ_LENGTH)  e.g. (6, 400)
+    signal tensor : (NUM_CHANNELS, SEQ_LENGTH) e.g. (6, 400)
     distance      : scalar [km]
 """
-
 import os
 import glob
 import numpy as np
@@ -49,9 +47,8 @@ class FaultDataset(Dataset):
     """
     Loads a directory of oscillogram CSV files.
     Each file => one (signal, distance) sample.
-
-    signal shape : (NUM_CHANNELS, SEQ_LENGTH)  ready for Conv1d
-    distance     : scalar float32 (optionally normalized to [0,1])
+    signal shape : (NUM_CHANNELS, SEQ_LENGTH) ready for Conv1d
+    distance     : scalar float32 (optionally normalized to [0,1] or p.u.)
     """
 
     def __init__(
@@ -60,20 +57,19 @@ class FaultDataset(Dataset):
         seq_length: int = 400,
         num_channels: int = 6,
         normalize: bool = True,
-        signal_scalers: Optional[list] = None,   # list of NUM_CHANNELS fitted StandardScalers
+        signal_scalers: Optional[list] = None,  # list of NUM_CHANNELS fitted StandardScalers
         distance_scaler: Optional[MinMaxScaler] = None,
+        cfg=None,  # NEW: Config object for p.u. normalization
     ):
         """
         Args:
-            data_dir       : folder containing *.csv oscillogram files
-                             (default: data/data_training/)
-            seq_length     : number of time steps expected in each file
-            num_channels   : number of signal channels (default 6)
-            normalize      : apply per-channel StandardScaler to signals
-                             and MinMaxScaler to distance
-            signal_scalers : pre-fitted scalers (pass when creating test set
-                             to avoid data leakage)
-            distance_scaler: pre-fitted MinMaxScaler for distance
+            data_dir        : folder containing *.csv oscillogram files
+            seq_length      : number of time steps expected in each file
+            num_channels    : number of signal channels (default 6)
+            normalize       : apply normalization (mode determined by cfg)
+            signal_scalers  : pre-fitted scalers (for test set)
+            distance_scaler : pre-fitted MinMaxScaler for distance
+            cfg             : Config object (needed for p.u. normalization mode)
         """
         if not os.path.isdir(data_dir):
             raise FileNotFoundError(
@@ -93,14 +89,13 @@ class FaultDataset(Dataset):
 
         print(f"Loading {len(csv_files)} oscillogram files from {data_dir} ...")
 
-        signals_list: list = []   # each: (NUM_CHANNELS, seq_length)
+        signals_list: list = []  # each: (NUM_CHANNELS, seq_length)
         distances_list: list = []
         skipped = 0
 
         for fpath in csv_files:
             try:
                 df = pd.read_csv(fpath)
-
                 # ---- validate columns ----
                 missing = [c for c in [DISTANCE_COL] + SIGNAL_COLS if c not in df.columns]
                 if missing:
@@ -134,54 +129,102 @@ class FaultDataset(Dataset):
         if len(signals_list) == 0:
             raise ValueError("No valid samples loaded. Check your CSV files.")
 
-        print(f"  Loaded {len(signals_list)} samples  ({skipped} skipped)")
+        print(f"  Loaded {len(signals_list)} samples ({skipped} skipped)")
 
         self.seq_length = seq_length
         self.num_channels = num_channels
         self.num_samples = len(signals_list)
+        self.cfg = cfg  # store config
 
-        # signals: (N, 6, seq_length)  /  distances: (N,)
-        self.signals = np.stack(signals_list, axis=0)     # (N, 6, T)
+        # signals: (N, 6, seq_length) / distances: (N,)
+        self.signals = np.stack(signals_list, axis=0)  # (N, 6, T)
         self.distances = np.array(distances_list, dtype=np.float32)  # (N,)
 
-        print(f"  Signal tensor shape  : {self.signals.shape}")
-        print(f"  Distance range       : [{self.distances.min():.2f}, {self.distances.max():.2f}] km")
+        print(f"  Signal tensor shape : {self.signals.shape}")
+        print(f"  Distance range      : [{self.distances.min():.2f}, {self.distances.max():.2f}] km")
 
         # ============ NORMALIZATION ============
-        # Per-channel StandardScaler: each channel has its own mean/std
-        # This is critical because currents (~0.07-260 A) and voltages (~100 kV)
-        # live on completely different scales.
         if normalize:
-            if signal_scalers is None:
-                self.signal_scalers = []
-                for ch in range(self.signals.shape[1]):
-                    scaler = StandardScaler()
-                    flat = self.signals[:, ch, :].reshape(-1, 1)
-                    scaler.fit(flat)
-                    self.signals[:, ch, :] = scaler.transform(flat).reshape(
-                        self.num_samples, self.seq_length
-                    )
-                    self.signal_scalers.append(scaler)
-            else:
-                self.signal_scalers = signal_scalers
-                for ch, scaler in enumerate(signal_scalers):
-                    flat = self.signals[:, ch, :].reshape(-1, 1)
-                    self.signals[:, ch, :] = scaler.transform(flat).reshape(
-                        self.num_samples, self.seq_length
-                    )
+            norm_mode = getattr(cfg, 'NORMALIZATION_MODE', 'standard') if cfg else 'standard'
 
-            if distance_scaler is None:
-                self.distance_scaler = MinMaxScaler()
-                self.distances = self.distance_scaler.fit_transform(
-                    self.distances.reshape(-1, 1)
-                ).flatten()
-            else:
-                self.distance_scaler = distance_scaler
-                self.distances = self.distance_scaler.transform(
-                    self.distances.reshape(-1, 1)
-                ).flatten()
+            if norm_mode == 'pu':
+                # === PER-UNIT (p.u.) NORMALIZATION ===
+                print("  Applying physical per-unit (p.u.) normalization...")
+                if not cfg:
+                    raise ValueError("cfg must be provided for p.u. normalization mode")
 
-            print("  Per-channel normalization applied")
+                # Physical base quantities
+                Unom_kv = cfg.LINE_UNOM_KV
+                L_km = cfg.LINE_L_KM
+                r1 = cfg.LINE_R1_OHM_KM
+                x1 = cfg.LINE_X1_OHM_KM
+
+                # Calculate line impedance
+                Z1_total = ((r1 * L_km)**2 + (x1 * L_km)**2)**0.5
+
+                # Base voltage (phase-to-ground) in Volts
+                Ubase_V = (Unom_kv * 1000) / (3**0.5)
+
+                # Base current in Amperes
+                Ibase_A = Ubase_V / Z1_total
+
+                print(f"    Unom      = {Unom_kv} kV")
+                print(f"    L         = {L_km} km")
+                print(f"    Z1_total  = {Z1_total:.2f} Ohm")
+                print(f"    Ubase     = {Ubase_V:.1f} V")
+                print(f"    Ibase     = {Ibase_A:.1f} A")
+
+                # Normalize currents (channels 0,1,2) [A] -> [p.u.]
+                self.signals[:, 0:3, :] /= Ibase_A
+
+                # Normalize voltages (channels 3,4,5) [kV] -> [p.u.]
+                self.signals[:, 3:6, :] /= Unom_kv
+
+                # Normalize distance [km] -> [0, 1] (relative to line length)
+                self.distances /= L_km
+
+                # No sklearn scalers in p.u. mode
+                self.signal_scalers = None
+                self.distance_scaler = None
+
+                print("  p.u. normalization complete")
+
+            else:
+                # === STANDARD STATISTICAL NORMALIZATION ===
+                # Per-channel StandardScaler: each channel has its own mean/std
+                # This is critical because currents (~0.07-260 A) and voltages (~100 kV)
+                # live on completely different scales.
+                if signal_scalers is None:
+                    self.signal_scalers = []
+                    for ch in range(self.signals.shape[1]):
+                        scaler = StandardScaler()
+                        flat = self.signals[:, ch, :].reshape(-1, 1)
+                        scaler.fit(flat)
+                        self.signals[:, ch, :] = scaler.transform(flat).reshape(
+                            self.num_samples, self.seq_length
+                        )
+                        self.signal_scalers.append(scaler)
+                else:
+                    self.signal_scalers = signal_scalers
+                    for ch, scaler in enumerate(signal_scalers):
+                        flat = self.signals[:, ch, :].reshape(-1, 1)
+                        self.signals[:, ch, :] = scaler.transform(flat).reshape(
+                            self.num_samples, self.seq_length
+                        )
+
+                if distance_scaler is None:
+                    self.distance_scaler = MinMaxScaler()
+                    self.distances = self.distance_scaler.fit_transform(
+                        self.distances.reshape(-1, 1)
+                    ).flatten()
+                else:
+                    self.distance_scaler = distance_scaler
+                    self.distances = self.distance_scaler.transform(
+                        self.distances.reshape(-1, 1)
+                    ).flatten()
+
+                print("  Per-channel normalization applied (standard mode)")
+
         else:
             self.signal_scalers = None
             self.distance_scaler = None
@@ -193,10 +236,10 @@ class FaultDataset(Dataset):
     def __getitem__(self, idx: int) -> Tuple[torch.Tensor, torch.Tensor]:
         """
         Returns:
-            signal   : FloatTensor  (NUM_CHANNELS, SEQ_LENGTH)
-            distance : FloatTensor  scalar wrapped in shape (1,)
+            signal   : FloatTensor (NUM_CHANNELS, SEQ_LENGTH)
+            distance : FloatTensor scalar wrapped in shape (1,)
         """
-        signal = torch.from_numpy(self.signals[idx])          # (6, T)
+        signal = torch.from_numpy(self.signals[idx])  # (6, T)
         distance = torch.tensor([self.distances[idx]], dtype=torch.float32)
         return signal, distance
 
@@ -222,7 +265,6 @@ class DataLoaderFactory:
 
         Args:
             data_dir : directory with oscillogram CSV files
-                       (cfg.DATA_DIR -> data/data_training/ by default)
             cfg      : Config object
 
         Returns:
@@ -233,6 +275,7 @@ class DataLoaderFactory:
             seq_length=cfg.SEQ_LENGTH,
             num_channels=cfg.NUM_CHANNELS,
             normalize=cfg.NORMALIZE_DATA,
+            cfg=cfg,  # NEW: pass Config object
         )
 
         scalers = {
