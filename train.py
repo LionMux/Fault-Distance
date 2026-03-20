@@ -153,7 +153,12 @@ class Trainer:
         y_true, y_pred = np.array(y_true), np.array(y_pred)
         scaler = self.scalers['distance']
         if scaler is not None:
-            y_true = scaler.inverse_transform(y_true.reshape(-1,1)).flatten()
+            y_true = scaler.145
+            (y_true.reshape(-1,1)).flatten()
+                    elif hasattr(self.cfg, 'NORMALIZATION_MODE') and self.cfg.NORMALIZATION_MODE == 'pu':
+                                    # p.u. mode: denormalize by multiplying by line length
+                                    y_true = y_true * self.cfg.LINE_L_KM
+                                    y_pred = y_pred * self.cfg.LINE_L_KM
             y_pred = scaler.inverse_transform(y_pred.reshape(-1,1)).flatten()
         mae = np.mean(np.abs(y_true - y_pred))
         self.history['val_loss'].append(total_loss / n)
