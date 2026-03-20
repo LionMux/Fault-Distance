@@ -2,17 +2,13 @@
 
 from .dataset import FaultDataset, DataLoaderFactory
 from .preprocessing import apply_butterworth_filter
-from .augmentation import (
-    AugmentationConfig,
-    FaultDataAugmenter,
-    create_augmented_dataset,
-)
+from .augmentation import AugmentationPipeline, TimeShiftAugmentation, GaussianNoiseAugmentation
 
 __all__ = [
     'FaultDataset',
     'DataLoaderFactory',
     'apply_butterworth_filter',
-    'AugmentationConfig',
-    'FaultDataAugmenter',
-    'create_augmented_dataset',
+    'AugmentationPipeline',
+    'TimeShiftAugmentation',
+    'GaussianNoiseAugmentation',
 ]
