@@ -13,6 +13,15 @@ data:
   num_channels: 6
   seq_length: 400
   normalize: true
+    normalization_mode: standard  # 'standard' | 'pu'
+
+    # ============ LINE PARAMETERS (for p.u. normalization) ============
+    # Used only when normalization_mode: pu
+    line_params:
+      Unom_kv: 110.0       # Nominal voltage [kV]
+        L_km: 50.0           # Line length [km]
+          r1_ohm_km: 0.20046   # Positive sequence resistance [Ohm/km]
+            x1_ohm_km: 0.4155    # Positive sequence reactance [Ohm/km]
 
 model:
   type: cnn1d          # cnn1d | dilated_cnn1d | resnet1d
