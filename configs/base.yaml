@@ -1,10 +1,10 @@
-# =====================================================================
+# ==============================================================================
 # BASE CONFIG - foundation for all experiments.
 # Do not run directly; used as base via inheritance.
-# =====================================================================
+# ==============================================================================
 
 experiment_name: base
-device: auto          # auto | cuda | cpu
+device: auto           # auto | cuda | cpu
 seed: 42
 
 data:
@@ -13,15 +13,23 @@ data:
   num_channels: 6
   seq_length: 400
   normalize: true
-    normalization_mode: standard  # 'standard' | 'pu'
+  normalization_mode: standard  # 'standard' | 'pu'
 
-    # ============ LINE PARAMETERS (for p.u. normalization) ============
-    # Used only when normalization_mode: pu
-    line_params:
-      Unom_kv: 110.0       # Nominal voltage [kV]
-        L_km: 50.0           # Line length [km]
-          r1_ohm_km: 0.20046   # Positive sequence resistance [Ohm/km]
-            x1_ohm_km: 0.4155    # Positive sequence reactance [Ohm/km]
+  # ============ LINE PARAMETERS (for p.u. normalization) ============
+  # Used only when normalization_mode: pu
+  line_params:
+    Unom_kv: 110.0       # Nominal voltage [kV]
+    L_km: 50.0           # Line length [km]
+    r1_ohm_km: 0.20046   # Positive sequence resistance [Ohm/km]
+    x1_ohm_km: 0.4155    # Positive sequence reactance [Ohm/km]
+
+# ============ SIGNAL PREPROCESSING ============
+preprocessing:
+  butterworth_enabled: false
+  butterworth_cutoff: 10.0   # Cutoff frequency in Hz (typically 5-15 Hz)
+  butterworth_fs: 1000.0     # Sampling frequency in Hz
+  butterworth_order: 2       # Filter order
+  butterworth_type: 'highpass'
 
 model:
   type: cnn1d          # cnn1d | dilated_cnn1d | resnet1d
@@ -31,21 +39,21 @@ model:
 
 training:
   batch_size: 32
-  num_epochs: 150
-  optimizer: adam      # adam | adamw | sgd
+  num_epochs: 100
+  optimizer: adam      # adam | sgd | adamw
   learning_rate: 0.001
-  weight_decay: 0.00001
-  loss: smooth_l1      # smooth_l1 | mse | mae
+  weight_decay: 1e-5
+  loss: smooth_l1      # mse | mae | smooth_l1
   gradient_clip: 1.0
 
 scheduler:
-  type: cosine         # cosine | linear | exponential | null
+  type: cosine         # cosine | linear | exponential | None
   warmup_epochs: 5
 
 early_stopping:
   enabled: true
   patience: 15
-  min_delta: 0.0001
+  min_delta: 1e-4
 
 checkpointing:
   save_dir: checkpoints
@@ -55,10 +63,3 @@ checkpointing:
 logging:
   log_dir: logs
   log_every_n_batches: 50
-
-# --- Parameters specific to scripts/augment_and_train.py ---
-augmentation:
-  input_dir: data/data_training
-  train_aug_dir: data/data_augmented_train
-  val_dir: data/data_val
-  skip_augmentation: false
