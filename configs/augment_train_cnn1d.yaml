@@ -1,0 +1,19 @@
+# Run: python scripts/augment_and_train.py --config configs/augment_train_cnn1d.yaml
+experiment_name: augment_train_cnn1d_v1
+
+model:
+  type: cnn1d
+  num_filters: 64
+  kernel_size: 5
+  dropout: 0.3
+
+training:
+  num_epochs: 150
+  batch_size: 32
+  learning_rate: 0.001
+
+augmentation:
+  input_dir: data/data_training
+  train_aug_dir: data/data_augmented_train
+  val_dir: data/data_val
+  skip_augmentation: false
