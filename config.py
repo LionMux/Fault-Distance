@@ -106,8 +106,7 @@ class Config:
         self.print_config()
 
     def print_config(self):
-        print("
-" + "=" * 70)
+        print("" + "=" * 70)
         print("CONFIGURATION")
         print("=" * 70)
         
@@ -126,14 +125,11 @@ class Config:
         }
         
         for section, keys in sections.items():
-            print(f"
-[{section}]")
+            print(f"[{section}]")
             for key in keys:
                 if hasattr(self, key):
                     print(f"  {key:<30} = {getattr(self, key)}")
-        print("
-" + "=" * 70 + "
-")
+        print("" + "=" * 70 + "")
 
 
 CFG = Config()
