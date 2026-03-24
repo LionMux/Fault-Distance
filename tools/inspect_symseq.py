@@ -223,6 +223,6 @@ ax.text(0.05, 0.95, summary, transform=ax.transAxes,
         bbox=dict(boxstyle="round", facecolor="lightyellow", alpha=0.8))
 
 plt.tight_layout()
-out = "symseq_inspect.png"
+out = "tools/output_tools/symseq_inspect.png"
 plt.savefig(out, dpi=120)
 print(f"\nГрафик сохранён: {out}")
