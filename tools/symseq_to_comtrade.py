@@ -16,7 +16,7 @@ CSV (сигналы)
 Расширяемость
 -------------
 * Добавить новый канал   → добавить поле в SymSeqResult + строку в
-                           ComtradeExporter._channel_defs()
+                           ComtradeExporter._CURRENT_CHANNELS / _VOLTAGE_CHANNELS
 * Изменить формат .dat   → переопределить ComtradeExporter._write_dat()
 * Экспорт батча файлов   → export_batch() внизу модуля
 
@@ -32,7 +32,6 @@ from __future__ import annotations
 import argparse
 import os
 import sys
-import struct
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
@@ -53,10 +52,10 @@ from fault_distance.utils.column_detector import (
 from symseq.power_systems import symseq_from_waveforms
 
 # ── константы ─────────────────────────────────────────────────────────────────
-DEFAULT_CSV        = "data/data_training/2AB_10km.csv"
-DEFAULT_F0         = 50.0     # Гц
-DEFAULT_FS_FALLBACK = 1000.0  # Гц — если в CSV нет fs_hz
-OUTPUT_DIR         = Path(__file__).parent / "output_tools"
+DEFAULT_CSV         = "data/data_training/2AB_10km.csv"
+DEFAULT_F0          = 50.0     # Гц
+DEFAULT_FS_FALLBACK = 1000.0   # Гц — если в CSV нет fs_hz
+OUTPUT_DIR          = Path(__file__).parent / "output_tools"
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -85,17 +84,17 @@ class SymSeqResult:
     I1_mag : np.ndarray
     I2_mag : np.ndarray
 
-    # Углы, рад
+    # Углы, рад (конвертируются в градусы при записи)
     I0_ang : np.ndarray = field(repr=False)
     I1_ang : np.ndarray = field(repr=False)
     I2_ang : np.ndarray = field(repr=False)
 
-    # Амплитуды, В (исходные кВ → В для COMTRADE)
+    # Амплитуды напряжений, В
     U0_mag : np.ndarray = field(repr=False)
     U1_mag : np.ndarray = field(repr=False)
     U2_mag : np.ndarray = field(repr=False)
 
-    # Углы, рад
+    # Углы, рад (конвертируются в градусы при записи)
     U0_ang : np.ndarray = field(repr=False)
     U1_ang : np.ndarray = field(repr=False)
     U2_ang : np.ndarray = field(repr=False)
@@ -106,9 +105,9 @@ class SymSeqResult:
 # ═══════════════════════════════════════════════════════════════════════════════
 
 def sliding_symseq(
-    csv_path : str | Path,
-    f0       : float = DEFAULT_F0,
-    fs_fallback: float = DEFAULT_FS_FALLBACK,
+    csv_path    : str | Path,
+    f0          : float = DEFAULT_F0,
+    fs_fallback : float = DEFAULT_FS_FALLBACK,
 ) -> SymSeqResult:
     """
     Загружает CSV и вычисляет симметричные составляющие скользящим окном.
@@ -138,8 +137,8 @@ def sliding_symseq(
     win = int(round(fs / f0))
 
     # ── колонки ───────────────────────────────────────────────────────────────
-    dist_col = detect_distance_column(list(df.columns))
-    col_map  = detect_signal_columns(list(df.columns), distance_col=dist_col)
+    dist_col    = detect_distance_column(list(df.columns))
+    col_map     = detect_signal_columns(list(df.columns), distance_col=dist_col)
     distance_km = float(df[dist_col].iloc[0])
 
     sig = df[
@@ -206,40 +205,52 @@ def sliding_symseq(
 class ComtradeExporter:
     """
     Записывает SymSeqResult в пару файлов COMTRADE 1999:
-        <stem>.cfg  — конфигурационный файл (текстовый)
-        <stem>.dat  — бинарные данные (формат binary32)
+        <stem>.cfg  — конфигурационный файл (ASCII)
+        <stem>.dat  — данные в формате ASCII
 
-    Каналы, экспортируемые по умолчанию (расширяемо через _channel_defs):
-        I1_mag, I2_mag, I0_mag  — амплитуды токов последовательностей, А
+    Формат ASCII выбран намеренно: максимальная совместимость со всеми
+    осциллографическими ПО (Waves, PowerDB, DIgSILENT и др.).
+
+    Строка канала в .cfg (IEEE Std C37.111-1999, раздел 5.3.5):
+        n, ch_id, ph, ccbm, uu, a, b, skew, min, max, primary, secondary, PS
+
+        n       — номер канала (с 1)
+        ch_id   — имя канала (I1_mag и т.п.)
+        ph      — фаза: пустая строка для вычисленных каналов
+        ccbm    — идентификатор компонента: пустая строка для вычисленных
+        uu      — единица измерения (A, deg, V)
+        a       — масштабный множитель: физ. = a * raw + b
+        b       — смещение (0 для всех наших каналов)
+        skew    — временной сдвиг канала, мкс (0)
+        min/max — диапазон сырых значений (±32767 для int16, но в ASCII
+                  это поле информационное — реальные данные пишутся как float)
+        primary/secondary — коэф. трансформации (1/1 для вычисленных)
+        PS      — primary/secondary флаг (S)
+
+    Каналы по умолчанию (расширяется через _CURRENT_CHANNELS/_VOLTAGE_CHANNELS):
+        I1_mag, I2_mag, I0_mag  — амплитуды токов, А
         I1_ang, I2_ang, I0_ang  — углы токов, градусы
         U1_mag, U2_mag, U0_mag  — амплитуды напряжений, В
         U1_ang, U2_ang, U0_ang  — углы напряжений, градусы
-
-    Формат COMTRADE 1999 (IEEE Std C37.111-1999):
-        - .cfg: ASCII, разделитель запятая
-        - .dat: бинарный, sample_number(uint32) + timestamp(uint32) +
-                N×int16 отсчётов
     """
 
-    # Описание канала: (attr_name, ch_id, ph, ccbm, uu, a, b, skew, min, max, primary, secondary, PS)
-    # a  — множитель (физ. значение = a * raw + b)
-    # min/max — диапазон int16: ±32767
-    # primary/secondary — коэф. трансформации (1/1 для вычисленных каналов)
+    # Описание канала: (attr_name, ch_id, uu)
+    # ph и ccbm — пустые строки для вычисленных (не измеренных) каналов
     _CURRENT_CHANNELS = [
-        ("I1_mag", "I1_mag", "ABC", "A",   "A",  None, 0.0),
-        ("I2_mag", "I2_mag", "ABC", "A",   "A",  None, 0.0),
-        ("I0_mag", "I0_mag", "ABC", "A",   "A",  None, 0.0),
-        ("I1_ang", "I1_ang", "ABC", "deg", "deg",None, 0.0),
-        ("I2_ang", "I2_ang", "ABC", "deg", "deg",None, 0.0),
-        ("I0_ang", "I0_ang", "ABC", "deg", "deg",None, 0.0),
+        ("I1_mag", "I1_mag", "A"),
+        ("I2_mag", "I2_mag", "A"),
+        ("I0_mag", "I0_mag", "A"),
+        ("I1_ang", "I1_ang", "deg"),
+        ("I2_ang", "I2_ang", "deg"),
+        ("I0_ang", "I0_ang", "deg"),
     ]
     _VOLTAGE_CHANNELS = [
-        ("U1_mag", "U1_mag", "ABC", "V",   "V",  None, 0.0),
-        ("U2_mag", "U2_mag", "ABC", "V",   "V",  None, 0.0),
-        ("U0_mag", "U0_mag", "ABC", "V",   "V",  None, 0.0),
-        ("U1_ang", "U1_ang", "ABC", "deg", "deg",None, 0.0),
-        ("U2_ang", "U2_ang", "ABC", "deg", "deg",None, 0.0),
-        ("U0_ang", "U0_ang", "ABC", "deg", "deg",None, 0.0),
+        ("U1_mag", "U1_mag", "V"),
+        ("U2_mag", "U2_mag", "V"),
+        ("U0_mag", "U0_mag", "V"),
+        ("U1_ang", "U1_ang", "deg"),
+        ("U2_ang", "U2_ang", "deg"),
+        ("U0_ang", "U0_ang", "deg"),
     ]
 
     def __init__(self, output_dir: Path = OUTPUT_DIR):
@@ -248,7 +259,11 @@ class ComtradeExporter:
 
     # ── публичный интерфейс ───────────────────────────────────────────────────
 
-    def export(self, result: SymSeqResult, stem: Optional[str] = None) -> tuple[Path, Path]:
+    def export(
+        self,
+        result : SymSeqResult,
+        stem   : Optional[str] = None,
+    ) -> tuple[Path, Path]:
         """
         Записывает .cfg и .dat.
 
@@ -268,82 +283,75 @@ class ComtradeExporter:
         cfg_path = self.output_dir / f"{stem}.cfg"
         dat_path = self.output_dir / f"{stem}.dat"
 
-        channels, data_matrix = self._build_channels(result)
-        self._write_cfg(cfg_path, result, channels, dat_path.name)
-        self._write_dat(dat_path, result, data_matrix)
+        channels, phys_matrix = self._build_channels(result)
+        self._write_cfg(cfg_path, result, channels)
+        self._write_dat(dat_path, result, phys_matrix)
 
         return cfg_path, dat_path
 
-    # ── построение списка каналов и матрицы данных ────────────────────────────
+    # ── построение каналов и матрицы физических значений ─────────────────────
 
     def _build_channels(self, r: SymSeqResult):
         """
-        Собирает список каналов и матрицу сырых int16-значений.
+        Собирает список каналов и матрицу физических значений (float64).
 
-        Для каждого канала:
-            a = max_physical / 32767   (автомасштаб под int16)
-            raw = round(physical / a)
+        Для ASCII-формата масштабирование не нужно — пишем физические
+        значения напрямую. Параметры a=1, b=0 в .cfg.
 
         Returns
         -------
         channels    : list of dicts с полями для .cfg
-        data_matrix : np.ndarray (n_samples, n_channels), dtype int16
+        phys_matrix : np.ndarray (n_steps, n_channels), dtype float64
         """
         all_defs = self._CURRENT_CHANNELS + self._VOLTAGE_CHANNELS
-        channels   = []
-        data_cols  = []
+        channels  = []
+        data_cols = []
 
-        for idx, (attr, ch_id, ph, ccbm, uu, _, b) in enumerate(all_defs, start=1):
-            # получаем массив физических значений
-            raw_data = getattr(r, attr).copy()
+        for idx, (attr, ch_id, uu) in enumerate(all_defs, start=1):
+            phys = getattr(r, attr).copy()
 
-            # углы: радианы → градусы
+            # радианы → градусы для угловых каналов
             if uu == "deg":
-                raw_data = np.degrees(raw_data)
-
-            # автомасштаб
-            max_abs = np.max(np.abs(raw_data))
-            a = (max_abs / 32767.0) if max_abs > 0 else 1e-6
-
-            int16_data = np.round(raw_data / a).astype(np.int16)
+                phys = np.degrees(phys)
 
             channels.append({
-                "n":       idx,
-                "ch_id":   ch_id,
-                "ph":      ph,
-                "ccbm":    ccbm,
-                "uu":      uu,
-                "a":       a,
-                "b":       b if b is not None else 0.0,
-                "skew":    0.0,
-                "min":    -32767,
-                "max":     32767,
-                "primary": 1.0,
-                "secondary": 1.0,
-                "PS":      "S",
+                "n"         : idx,
+                "ch_id"     : ch_id,
+                "ph"        : "",      # пустая — вычисленный канал
+                "ccbm"      : "",      # пустая — вычисленный канал
+                "uu"        : uu,
+                "a"         : 1.0,     # физ. = 1.0 * raw + 0  (ASCII: raw=физ.)
+                "b"         : 0.0,
+                "skew"      : 0.0,
+                "min"       : float(phys.min()),
+                "max"       : float(phys.max()),
+                "primary"   : 1.0,
+                "secondary" : 1.0,
+                "PS"        : "S",
             })
-            data_cols.append(int16_data)
+            data_cols.append(phys)
 
-        data_matrix = np.column_stack(data_cols).astype(np.int16)  # (n_steps, n_ch)
-        return channels, data_matrix
+        phys_matrix = np.column_stack(data_cols)   # (n_steps, n_ch), float64
+        return channels, phys_matrix
 
     # ── запись .cfg ───────────────────────────────────────────────────────────
 
-    def _write_cfg(self, path: Path, r: SymSeqResult,
-                   channels: list, dat_name: str) -> None:
+    def _write_cfg(
+        self,
+        path     : Path,
+        r        : SymSeqResult,
+        channels : list,
+    ) -> None:
         """
-        Формат COMTRADE 1999 (.cfg)
+        Формат COMTRADE 1999 (.cfg), ASCII.
         Спецификация: IEEE Std C37.111-1999, раздел 5.
         """
         n_analog  = len(channels)
         n_digital = 0
         n_total   = n_analog + n_digital
 
-        # временно́й шаг скользящего окна = 1 отсчёт исходного сигнала
-        dt_us = int(round(1_000_000.0 / r.fs))   # мкс
-        fs_out = r.fs                              # та же fs что и у исходника
-
-        stamp = datetime.now().strftime("%d/%m/%Y,%H:%M:%S.%f")[:26]
+        fs_out = r.fs
+        stamp  = datetime.now().strftime("%d/%m/%Y,%H:%M:%S.%f")[:26]
 
         lines = []
 
@@ -353,58 +361,62 @@ class ComtradeExporter:
         # строка 2: TT,nA,nD
         lines.append(f"{n_total},{n_analog}A,{n_digital}D")
 
-        # строки каналов
+        # строки аналоговых каналов
+        # формат: n,ch_id,ph,ccbm,uu,a,b,skew,min,max,primary,secondary,PS
         for ch in channels:
             lines.append(
                 f"{ch['n']},{ch['ch_id']},{ch['ph']},{ch['ccbm']},{ch['uu']},"
                 f"{ch['a']:.9e},{ch['b']:.9e},{ch['skew']:.6f},"
-                f"{ch['min']},{ch['max']},"
+                f"{ch['min']:.6f},{ch['max']:.6f},"
                 f"{ch['primary']:.6f},{ch['secondary']:.6f},{ch['PS']}"
             )
 
-        # строка частоты сети
+        # частота сети
         lines.append(f"{r.f0:.3f}")
 
-        # строки частот дискретизации: nrates, samp, endsamp
+        # частота дискретизации: nrates / samp,endsamp
         lines.append("1")
         lines.append(f"{fs_out:.6f},{r.n_steps}")
 
         # временны́е метки первого и последнего отсчёта
-        lines.append(stamp)   # first sample
-        lines.append(stamp)   # last  sample (упрощение — одинаковые)
+        lines.append(stamp)
+        lines.append(stamp)
 
-        # формат файла данных
-        lines.append("BINARY32")
+        # формат файла данных — ASCII
+        lines.append("ASCII")
 
         # мультипликатор временно́го шага (timemult)
         lines.append("1")
 
         path.write_text("\n".join(lines) + "\n", encoding="ascii")
 
-    # ── запись .dat ───────────────────────────────────────────────────────────
+    # ── запись .dat (ASCII) ───────────────────────────────────────────────────
 
-    def _write_dat(self, path: Path,
-                   r: SymSeqResult,
-                   data_matrix: np.ndarray) -> None:
+    def _write_dat(
+        self,
+        path        : Path,
+        r           : SymSeqResult,
+        phys_matrix : np.ndarray,
+    ) -> None:
         """
-        COMTRADE BINARY32:
-            каждый сэмпл = uint32 sample_number
-                         + uint32 timestamp (мкс от первого отсчёта)
-                         + N × int16 каналы
+        COMTRADE ASCII .dat:
+            каждая строка = sample_number,timestamp,ch1,ch2,...,chN
+            timestamp — мкс от первого отсчёта (целое)
+            значения каналов — физические float, разделитель запятая
 
-        struct layout: '<IIN×h'  (little-endian)
+        Пример строки:
+            1,0,125.34,88.12,0.03,45.00,178.21,-2.10,...
         """
-        dt_us = int(round(1_000_000.0 / r.fs))
-        n_ch  = data_matrix.shape[1]
-        fmt   = f"<II{n_ch}h"
-        record_size = struct.calcsize(fmt)
+        dt_us = int(round(1_000_000.0 / r.fs))   # шаг по времени, мкс
 
-        with open(path, "wb") as f:
-            for i in range(r.n_steps):
-                sample_num = i + 1
-                timestamp  = i * dt_us
-                row        = data_matrix[i].tolist()
-                f.write(struct.pack(fmt, sample_num, timestamp, *row))
+        lines = []
+        for i in range(r.n_steps):
+            sample_num = i + 1
+            timestamp  = i * dt_us
+            values     = ",".join(f"{v:.6f}" for v in phys_matrix[i])
+            lines.append(f"{sample_num},{timestamp},{values}")
+
+        path.write_text("\n".join(lines) + "\n", encoding="ascii")
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -454,7 +466,7 @@ def export_batch(
 
 def _parse_args():
     p = argparse.ArgumentParser(
-        description="Экспорт симметричных составляющих в COMTRADE (.cfg + .dat)"
+        description="Экспорт симметричных составляющих в COMTRADE (.cfg + .dat ASCII)"
     )
     p.add_argument(
         "--csv", default=DEFAULT_CSV,
@@ -496,15 +508,15 @@ def main():
     print(f"Шагов     : {result.n_steps}")
     print(f"Дистанция : {result.distance_km:.1f} км")
     print()
-    print(f"Пиковые значения:")
+    print("Пиковые значения:")
     print(f"  I1 = {result.I1_mag.max():.4f} А   I2 = {result.I2_mag.max():.4f} А   I0 = {result.I0_mag.max():.4f} А")
-    print(f"  U1 = {result.U1_mag.max():.4f} кВ  U2 = {result.U2_mag.max():.4f} кВ  U0 = {result.U0_mag.max():.4f} кВ")
+    print(f"  U1 = {result.U1_mag.max():.4f} В   U2 = {result.U2_mag.max():.4f} В   U0 = {result.U0_mag.max():.4f} В")
     print()
 
     exporter = ComtradeExporter(output_dir=out)
     cfg_p, dat_p = exporter.export(result)
 
-    print(f"Записано  :")
+    print("Записано  :")
     print(f"  {cfg_p}")
     print(f"  {dat_p}")
 
