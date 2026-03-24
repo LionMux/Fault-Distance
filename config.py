@@ -15,43 +15,45 @@ class Config:
     DEVICE: str = 'cuda' if torch.cuda.is_available() else 'cpu'
 
     # ============ DATA PATHS ============
-    # Directory containing oscillogram CSV files (one file per fault event).
-    # Kept separate from data/ Python package to avoid mixing .csv with .py files.
     DATA_DIR: str = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'data', 'data_training')
     TRAIN_SPLIT: float = 0.8  # 80% train, 20% test
 
     # ============ DATA FORMAT ============
-    # Each CSV file = one oscillogram sample.
-    # Columns: distance_km, CT1IA, CT1IB, CT1IC, S1)BUS1UA, S1)BUS1UB, S1)BUS1UC
-    # Rows: time steps of the signal window
-    NUM_CHANNELS: int = 6  # Number of signal channels (Ia, Ib, Ic, Ua, Ub, Uc)
-    SEQ_LENGTH: int = 400  # Expected number of time steps per file
-    NORMALIZE_DATA: bool = True  # Per-channel StandardScaler normalization
+    NUM_CHANNELS: int = 6    # Number of signal channels (Ia, Ib, Ic, Ua, Ub, Uc)
+    SEQ_LENGTH: int = 400    # Expected number of time steps per file
+    NORMALIZE_DATA: bool = True
 
     # ============ NORMALIZATION MODE ============
     # 'standard' = statistical normalization (StandardScaler + MinMaxScaler)
-    # 'pu' = physical per-unit normalization using line parameters
+    # 'pu'       = physical per-unit normalization using line parameters
     NORMALIZATION_MODE: str = 'standard'
 
     # ============ LINE PARAMETERS (for p.u. normalization) ============
-    # Only used when NORMALIZATION_MODE = 'pu'
-    LINE_UNOM_KV: float = 110.0      # Nominal voltage [kV]
-    LINE_L_KM: float = 50.0          # Line length [km]
-    LINE_R1_OHM_KM: float = 0.20046  # Positive sequence resistance [Ohm/km]
-    LINE_X1_OHM_KM: float = 0.4155   # Positive sequence reactance [Ohm/km]
+    LINE_UNOM_KV: float = 110.0
+    LINE_L_KM: float = 50.0
+    LINE_R1_OHM_KM: float = 0.20046
+    LINE_X1_OHM_KM: float = 0.4155
 
     # ============ SIGNAL PREPROCESSING ============
-    # Butterworth filter for DC component (aperiodic) removal
+    # --- Butterworth high-pass filter (removes DC / aperiodic component) ---
     BUTTERWORTH_ENABLED: bool = False
-    BUTTERWORTH_CUTOFF: float = 10.0   # Cutoff frequency in Hz (typically 5-15 Hz)
-    BUTTERWORTH_FS: float = 1000.0     # Sampling frequency in Hz (for Butterworth only)
-    BUTTERWORTH_ORDER: int = 2         # Filter order
+    BUTTERWORTH_CUTOFF: float = 10.0    # Cutoff frequency [Hz]
+    # Sampling frequency used only by the Butterworth filter.
+    # comtrade_to_csv.py stores the real fs in every CSV column 'fs_hz';
+    # the t0-detection algorithm reads that column automatically.
+    # Set this to match your data if Butterworth filtering is enabled.
+    BUTTERWORTH_FS: float = 2000.0      # [Hz] — fallback for Butterworth
+    BUTTERWORTH_ORDER: int = 2
     BUTTERWORTH_TYPE: str = 'highpass'
 
-    # Sampling and fault inception window parameters
-    SAMPLING_FREQ_HZ: float = 2000.0   # Base sampling rate used for t0 detection
-    MAINS_FREQ_HZ: float = 50.0        # Power system frequency
-    T0_ENABLED: bool = False           # Enable t0-based cropping
+    # --- Fault-inception (t0) detection ---
+    # SAMPLING_FREQ_HZ is a *fallback* value used only for CSV files that
+    # were converted without the 'fs_hz' column (legacy files).
+    # New files produced by comtrade_to_csv.py carry their own fs_hz column
+    # and it is used automatically — no manual configuration needed.
+    SAMPLING_FREQ_HZ: float = 2000.0   # fallback [Hz] for legacy CSV files
+    MAINS_FREQ_HZ: float = 50.0        # Power-system frequency [Hz]
+    T0_ENABLED: bool = False            # Enable fault-inception cropping
     T0_COARSE_TOP_K: int = 5
     T0_COARSE_WINDOW_MS: float = 200.0
     T0_PRE_MS: float = 20.0
@@ -60,23 +62,22 @@ class Config:
 
     # ============ MODEL ARCHITECTURE ============
     MODEL_TYPE: str = 'cnn1d'  # 'cnn1d', 'dilated_cnn1d', 'resnet1d'
-    NUM_FILTERS: int = 64      # Initial number of filters
-    KERNEL_SIZE: int = 5       # Conv kernel size
-    DROPOUT: float = 0.3       # Dropout rate
+    NUM_FILTERS: int = 64
+    KERNEL_SIZE: int = 5
+    DROPOUT: float = 0.3
 
     # ============ TRAINING HYPERPARAMETERS ============
     BATCH_SIZE: int = 32
     NUM_EPOCHS: int = 100
     LEARNING_RATE: float = 0.001
-    WEIGHT_DECAY: float = 1e-5  # L2 regularization
+    WEIGHT_DECAY: float = 1e-5
 
-    # Learning rate scheduler
     SCHEDULER_TYPE: Optional[str] = 'cosine'  # 'cosine', 'linear', 'exponential', None
     WARMUP_EPOCHS: int = 5
 
     # ============ OPTIMIZATION ============
-    OPTIMIZER: str = 'adam'       # 'adam', 'sgd', 'adamw'
-    LOSS_FUNCTION: str = 'smooth_l1'  # 'mse', 'mae', 'smooth_l1'
+    OPTIMIZER: str = 'adam'
+    LOSS_FUNCTION: str = 'smooth_l1'
     GRADIENT_CLIP: Optional[float] = 1.0
 
     # ============ EARLY STOPPING ============
@@ -155,7 +156,6 @@ def get_config(**kwargs) -> 'Config':
     Example:
         cfg = get_config(NUM_EPOCHS=200, BATCH_SIZE=64)
     """
-
     config = Config()
     for key, value in kwargs.items():
         if hasattr(config, key):
@@ -172,7 +172,6 @@ def get_config(**kwargs) -> 'Config':
 
 def _deep_merge(base: dict, override: dict) -> dict:
     """Recursively merges override on top of base."""
-
     result = base.copy()
     for k, v in override.items():
         if k in result and isinstance(result[k], dict) and isinstance(v, dict):
@@ -184,7 +183,6 @@ def _deep_merge(base: dict, override: dict) -> dict:
 
 def _autocast(value: str):
     """Cast string to int / float / bool if possible."""
-
     try:
         return int(value)
     except ValueError:
@@ -240,18 +238,23 @@ def load_config(yaml_path: str, overrides: dict = None) -> 'Config':
             d[keys[-1]] = _autocast(value) if isinstance(value, str) else value
 
     # 4. Map YAML sections -> Config UPPERCASE fields
-    data_sec = raw.get('data', {})
+    data_sec  = raw.get('data', {})
     model_sec = raw.get('model', {})
     train_sec = raw.get('training', {})
     sched_sec = raw.get('scheduler', {})
-    es_sec = raw.get('early_stopping', {})
-    ck_sec = raw.get('checkpointing', {})
-    log_sec = raw.get('logging', {})
-    line_sec = raw.get('line_params', {})
-    prep_sec = raw.get('preprocessing', {})
+    es_sec    = raw.get('early_stopping', {})
+    ck_sec    = raw.get('checkpointing', {})
+    log_sec   = raw.get('logging', {})
+    line_sec  = raw.get('line_params', {})
+    prep_sec  = raw.get('preprocessing', {})
 
     device_raw = raw.get('device', 'auto')
     device = ('cuda' if torch.cuda.is_available() else 'cpu') if device_raw == 'auto' else device_raw
+
+    # BUTTERWORTH_FS: prefer explicit yaml key; otherwise mirror SAMPLING_FREQ_HZ
+    # so both filters share a single source of truth when set in YAML.
+    _sampling_freq = prep_sec.get('sampling_freq_hz', 2000.0)
+    _butterworth_fs = prep_sec.get('butterworth_fs', _sampling_freq)
 
     cfg = Config(
         EXPERIMENT_NAME=raw.get('experiment_name', 'unnamed'),
@@ -277,10 +280,10 @@ def load_config(yaml_path: str, overrides: dict = None) -> 'Config':
         # preprocessing
         BUTTERWORTH_ENABLED=prep_sec.get('butterworth_enabled', False),
         BUTTERWORTH_CUTOFF=prep_sec.get('butterworth_cutoff', 10.0),
-        BUTTERWORTH_FS=prep_sec.get('butterworth_fs', 1000.0),
+        BUTTERWORTH_FS=_butterworth_fs,
         BUTTERWORTH_ORDER=prep_sec.get('butterworth_order', 2),
         BUTTERWORTH_TYPE=prep_sec.get('butterworth_type', 'highpass'),
-        SAMPLING_FREQ_HZ=prep_sec.get('sampling_freq_hz', 2000.0),
+        SAMPLING_FREQ_HZ=_sampling_freq,
         MAINS_FREQ_HZ=prep_sec.get('mains_freq_hz', 50.0),
         T0_ENABLED=prep_sec.get('t0_enabled', False),
         T0_COARSE_TOP_K=prep_sec.get('t0_coarse_top_k', 5),
