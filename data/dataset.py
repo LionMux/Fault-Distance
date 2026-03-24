@@ -11,17 +11,19 @@ The data_training/ subfolder is intentionally separate from the data/ Python
 package (which contains dataset.py, preprocessing.py, __init__.py) so that 
 CSV files and source files never get mixed together.
 
-CSV format (rows = time steps, 7 columns):
-    distance_km | CT1IA | CT1IB | CT1IC | S1)BUS1UA | S1)BUS1UB | S1)BUS1UC
-    0.5         | ...   | ...   | ...   | ...       | ...       | ...
-    0.5         | ...   | ...   | ...   | ...       | ...       | ...
-    ...
+CSV format (rows = time steps, columns):
+    distance_km | [fs_hz] | <currents> | <voltages> | <others>
 
-Signal channels:
-    0: CT1IA    - Phase A current [A] (small magnitude ~0.07-260)
+    distance_km — target label (constant per file, first column)
+    fs_hz       — sampling frequency in Hz written by comtrade_to_csv.py
+                  (optional; if absent, cfg.SAMPLING_FREQ_HZ is used as
+                  fallback so old CSV files without this column still work)
+
+Signal channels (6 expected by default):
+    0: CT1IA    - Phase A current [A]
     1: CT1IB    - Phase B current [A]
     2: CT1IC    - Phase C current [A]
-    3: BUS1UA   - Phase A voltage [kV] (large magnitude ~100)
+    3: BUS1UA   - Phase A voltage [kV]
     4: BUS1UB   - Phase B voltage [kV]
     5: BUS1UC   - Phase C voltage [kV]
 
@@ -41,6 +43,7 @@ from typing import Optional, Tuple, Dict
 
 # Known column names in the CSV
 DISTANCE_COL = 'distance_km'
+FS_COL        = 'fs_hz'   # written by comtrade_to_csv.py; optional in old files
 SIGNAL_COLS = ['CT1IA', 'CT1IB', 'CT1IC', 'S1)BUS1UA', 'S1)BUS1UB', 'S1)BUS1UC']
 
 
@@ -50,6 +53,15 @@ class FaultDataset(Dataset):
     Each file => one (signal, distance) sample.
     signal shape : (NUM_CHANNELS, SEQ_LENGTH) ready for Conv1d
     distance     : scalar float32 (optionally normalized to [0,1] or p.u.)
+
+    Fault-inception (t0) algorithm
+    ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    When cfg.T0_ENABLED is True the dataset automatically detects the
+    fault-inception moment t0 for every file individually, using the
+    sampling frequency stored in the CSV column ``fs_hz`` (written by
+    comtrade_to_csv.py).  If a file does not have the ``fs_hz`` column
+    (legacy CSV), cfg.SAMPLING_FREQ_HZ is used as a fallback so that
+    old files continue to work without any changes.
     """
 
     def __init__(
@@ -67,12 +79,12 @@ class FaultDataset(Dataset):
         Args:
             data_dir       : Folder containing *.csv oscillogram files.
             seq_length     : Number of time steps expected in each file
-                              (also used as target length for t0‑cropped
+                              (also used as target length for t0-cropped
                                windows when enabled).
             num_channels   : Number of signal channels (default 6).
             normalize      : Apply normalization (mode determined by cfg).
-            signal_scalers : Pre‑fitted scalers (for test set).
-            distance_scaler: Pre‑fitted MinMaxScaler for distance.
+            signal_scalers : Pre-fitted scalers (for test set).
+            distance_scaler: Pre-fitted MinMaxScaler for distance.
             cfg            : Config object (needed for p.u. normalization
                               mode and advanced preprocessing).
         """
@@ -98,47 +110,69 @@ class FaultDataset(Dataset):
         distances_list: list = []
         skipped = 0
 
-        # Optional fault‑inception configuration from cfg
+        # Optional fault-inception configuration from cfg
         self.cfg = cfg
         enable_t0 = bool(getattr(cfg, 'T0_ENABLED', False)) if cfg is not None else False
+
+        # Fallback fs when the CSV has no fs_hz column (legacy files)
+        _cfg_fs_fallback = (
+            float(getattr(cfg, 'SAMPLING_FREQ_HZ', 2000.0))
+            if cfg is not None
+            else 2000.0
+        )
+
         if enable_t0:
             from .fault_inception import FaultInceptionParams, detect_t0_and_crop
-
-            fs_hz = float(getattr(cfg, 'SAMPLING_FREQ_HZ', getattr(cfg, 'BUTTERWORTH_FS', 2000.0)))
-            params = FaultInceptionParams(
-                fs_hz=fs_hz,
-                mains_hz=float(getattr(cfg, 'MAINS_FREQ_HZ', 50.0)),
-                coarse_top_k=int(getattr(cfg, 'T0_COARSE_TOP_K', 5)),
-                coarse_window_ms=float(getattr(cfg, 'T0_COARSE_WINDOW_MS', 200.0)),
-                pre_fault_ms=float(getattr(cfg, 'T0_PRE_MS', 20.0)),
-                post_fault_ms=float(getattr(cfg, 'T0_POST_MS', 60.0)),
-                threshold_mult=float(getattr(cfg, 'T0_THRESHOLD_MULT', 1.0)),
-            )
+            _t0_mains_hz         = float(getattr(cfg, 'MAINS_FREQ_HZ',       50.0))
+            _t0_coarse_top_k     = int(  getattr(cfg, 'T0_COARSE_TOP_K',       5))
+            _t0_coarse_window_ms = float(getattr(cfg, 'T0_COARSE_WINDOW_MS', 200.0))
+            _t0_pre_ms           = float(getattr(cfg, 'T0_PRE_MS',            20.0))
+            _t0_post_ms          = float(getattr(cfg, 'T0_POST_MS',           60.0))
+            _t0_threshold_mult   = float(getattr(cfg, 'T0_THRESHOLD_MULT',     1.0))
         else:
-            # Placeholders to keep type checkers happy
             FaultInceptionParams = None  # type: ignore[assignment]
-            detect_t0_and_crop = None  # type: ignore[assignment]
-            params = None
+            detect_t0_and_crop   = None  # type: ignore[assignment]
 
         for fpath in csv_files:
             try:
                 df = pd.read_csv(fpath)
 
-                # ---- validate columns ----
+                # ---- validate required columns ----
                 missing = [c for c in [DISTANCE_COL] + SIGNAL_COLS if c not in df.columns]
                 if missing:
                     print(f" [SKIP] {os.path.basename(fpath)} - missing columns: {missing}")
                     skipped += 1
                     continue
 
-                # ---- target: constant in the whole file ----
+                # ---- target: constant for the whole file ----
                 distance = float(df[DISTANCE_COL].iloc[0])
 
-                # ---- raw signals: shape (T, 6) ----
+                # ---- sampling frequency: from CSV column or cfg fallback ----
+                if FS_COL in df.columns:
+                    file_fs_hz = float(df[FS_COL].iloc[0])
+                else:
+                    file_fs_hz = _cfg_fs_fallback
+                    if enable_t0:
+                        print(
+                            f" [INFO] {os.path.basename(fpath)} has no '{FS_COL}' column; "
+                            f"using cfg fallback fs={file_fs_hz:.1f} Hz"
+                        )
+
+                # ---- raw signals: shape (T, num_channels) ----
                 sig = df[SIGNAL_COLS].values.astype(np.float32)
 
-                # Optional fault‑inception detection and cropping
-                if enable_t0 and detect_t0_and_crop is not None and params is not None:
+                # ---- optional fault-inception detection and cropping ----
+                if enable_t0 and detect_t0_and_crop is not None:
+                    # Build per-file params using the fs read from THIS file
+                    params = FaultInceptionParams(
+                        fs_hz=file_fs_hz,
+                        mains_hz=_t0_mains_hz,
+                        coarse_top_k=_t0_coarse_top_k,
+                        coarse_window_ms=_t0_coarse_window_ms,
+                        pre_fault_ms=_t0_pre_ms,
+                        post_fault_ms=_t0_post_ms,
+                        threshold_mult=_t0_threshold_mult,
+                    )
                     try:
                         sig, _t0_local = detect_t0_and_crop(
                             sig,
@@ -146,14 +180,14 @@ class FaultDataset(Dataset):
                             current_channel_indices=(0, 1, 2),
                             target_length=seq_length,
                         )
-                    except Exception as e:  # pragma: no cover - robust to runtime issues
+                    except Exception as e:  # pragma: no cover
                         print(
-                            f" [WARN] t0 detection failed for {os.path.basename(fpath)}: {e}. "
+                            f" [WARN] t0 detection failed for "
+                            f"{os.path.basename(fpath)}: {e}. "
                             "Falling back to simple pad/trim."
                         )
 
-                # At this point sig has shape (T_eff, 6). For non‑t0 path
-                # we still need to pad/trim to seq_length.
+                # Pad / trim to seq_length (non-t0 path or t0 fallback)
                 T = sig.shape[0]
                 if T < seq_length:
                     pad = np.zeros((seq_length - T, sig.shape[1]), dtype=np.float32)
@@ -161,7 +195,7 @@ class FaultDataset(Dataset):
                 elif T > seq_length:
                     sig = sig[:seq_length, :]
 
-                # Convert to (6, seq_length)
+                # Convert to (num_channels, seq_length)
                 sig = sig.T
 
                 signals_list.append(sig)
@@ -180,8 +214,8 @@ class FaultDataset(Dataset):
         self.num_channels = num_channels
         self.num_samples = len(signals_list)
 
-        # signals: (N, 6, seq_length) / distances: (N,)
-        self.signals = np.stack(signals_list, axis=0)  # (N, 6, T)
+        # signals: (N, num_channels, seq_length) / distances: (N,)
+        self.signals   = np.stack(signals_list, axis=0)   # (N, C, T)
         self.distances = np.array(distances_list, dtype=np.float32)  # (N,)
 
         print(f" Signal tensor shape : {self.signals.shape}")
@@ -190,10 +224,10 @@ class FaultDataset(Dataset):
         # ============ PREPROCESSING (Butterworth etc.) ============
         if cfg and getattr(cfg, 'BUTTERWORTH_ENABLED', False):
             from .preprocessing import apply_butterworth_filter
-
             print(
                 f" Applying Butterworth {cfg.BUTTERWORTH_TYPE} filter "
-                f"(cutoff={cfg.BUTTERWORTH_CUTOFF} Hz)..."
+                f"(cutoff={cfg.BUTTERWORTH_CUTOFF} Hz, "
+                f"fs={cfg.BUTTERWORTH_FS} Hz)..."
             )
             self.signals = apply_butterworth_filter(self.signals, cfg)
 
@@ -202,48 +236,32 @@ class FaultDataset(Dataset):
             norm_mode = getattr(cfg, 'NORMALIZATION_MODE', 'standard') if cfg else 'standard'
 
             if norm_mode == 'pu':
-                # === PER-UNIT (p.u.) NORMALIZATION ===
                 print(" Applying physical per-unit (p.u.) normalization...")
                 if not cfg:
                     raise ValueError("cfg must be provided for p.u. normalization mode")
 
-                # Physical base quantities
-                Unom_kv = cfg.LINE_UNOM_KV
-                L_km = cfg.LINE_L_KM
-                r1 = cfg.LINE_R1_OHM_KM
-                x1 = cfg.LINE_X1_OHM_KM
-
-                # Calculate line impedance
+                Unom_kv  = cfg.LINE_UNOM_KV
+                L_km     = cfg.LINE_L_KM
+                r1       = cfg.LINE_R1_OHM_KM
+                x1       = cfg.LINE_X1_OHM_KM
                 Z1_total = ((r1 * L_km) ** 2 + (x1 * L_km) ** 2) ** 0.5
+                Ubase_V  = (Unom_kv * 1000) / (3 ** 0.5)
+                Ibase_A  = Ubase_V / Z1_total
 
-                # Base voltage (phase-to-ground) in Volts
-                Ubase_V = (Unom_kv * 1000) / (3 ** 0.5)
-                # Base current in Amperes
-                Ibase_A = Ubase_V / Z1_total
-
-                print(f" Unom = {Unom_kv} kV")
-                print(f" L    = {L_km} km")
+                print(f" Unom = {Unom_kv} kV, L = {L_km} km")
                 print(f" Z1_total = {Z1_total:.2f} Ohm")
-                print(f" Ubase = {Ubase_V:.1f} V")
-                print(f" Ibase = {Ibase_A:.1f} A")
+                print(f" Ubase = {Ubase_V:.1f} V, Ibase = {Ibase_A:.1f} A")
 
-                # Normalize currents (channels 0,1,2) [A] -> [p.u.]
-                self.signals[:, 0:3, :] /= Ibase_A
-                # Normalize voltages (channels 3,4,5) [kV] -> [p.u.]
-                self.signals[:, 3:6, :] /= Unom_kv
-                # Normalize distance [km] -> [0, 1] (relative to line length)
-                self.distances /= L_km
+                self.signals[:, 0:3, :] /= Ibase_A    # currents [A] -> [p.u.]
+                self.signals[:, 3:6, :] /= Unom_kv    # voltages [kV] -> [p.u.]
+                self.distances           /= L_km       # distance [km] -> [0,1]
 
-                # No sklearn scalers in p.u. mode
-                self.signal_scalers = None
+                self.signal_scalers  = None
                 self.distance_scaler = None
                 print(" p.u. normalization complete")
 
             else:
-                # === STANDARD STATISTICAL NORMALIZATION ===
-                # Per-channel StandardScaler: each channel has its own mean/std
-                # This is critical because currents (~0.07-260 A) and voltages (~100 kV)
-                # live on completely different scales.
+                # Per-channel StandardScaler
                 if signal_scalers is None:
                     self.signal_scalers = []
                     for ch in range(self.signals.shape[1]):
@@ -275,7 +293,7 @@ class FaultDataset(Dataset):
 
                 print(" Per-channel normalization applied (standard mode)")
         else:
-            self.signal_scalers = None
+            self.signal_scalers  = None
             self.distance_scaler = None
 
     # ------------------------------------------------------------------
@@ -285,14 +303,12 @@ class FaultDataset(Dataset):
 
     def __getitem__(self, idx: int) -> Tuple[torch.Tensor, torch.Tensor]:
         """Return (signal, distance) pair for given index."""
-
-        signal = torch.from_numpy(self.signals[idx])  # (6, T)
+        signal   = torch.from_numpy(self.signals[idx])  # (C, T)
         distance = torch.tensor([self.distances[idx]], dtype=torch.float32)
         return signal, distance
 
     def inverse_transform_distance(self, normalized: np.ndarray) -> np.ndarray:
         """Convert normalized predictions back to km."""
-
         if self.distance_scaler is not None:
             return self.distance_scaler.inverse_transform(
                 normalized.reshape(-1, 1)
@@ -323,16 +339,16 @@ class DataLoaderFactory:
             seq_length=cfg.SEQ_LENGTH,
             num_channels=cfg.NUM_CHANNELS,
             normalize=cfg.NORMALIZE_DATA,
-            cfg=cfg,  # Pass Config object
+            cfg=cfg,
         )
 
         scalers = {
-            'signal': full_dataset.signal_scalers,
+            'signal':   full_dataset.signal_scalers,
             'distance': full_dataset.distance_scaler,
         }
 
         train_size = int(cfg.TRAIN_SPLIT * len(full_dataset))
-        test_size = len(full_dataset) - train_size
+        test_size  = len(full_dataset) - train_size
 
         train_dataset, test_dataset = random_split(
             full_dataset,
