@@ -15,21 +15,34 @@ data:
   normalize: true
   normalization_mode: standard  # 'standard' | 'pu'
 
-  # ============ LINE PARAMETERS (for p.u. normalization) ============
-  # Used only when normalization_mode: pu
-  line_params:
-    Unom_kv: 110.0       # Nominal voltage [kV]
-    L_km: 50.0           # Line length [km]
-    r1_ohm_km: 0.20046   # Positive sequence resistance [Ohm/km]
-    x1_ohm_km: 0.4155    # Positive sequence reactance [Ohm/km]
+line_params:
+  Unom_kv: 110.0       # Nominal voltage [kV]
+  L_km: 50.0           # Line length [km]
+  r1_ohm_km: 0.20046   # Positive sequence resistance [Ohm/km]
+  x1_ohm_km: 0.4155    # Positive sequence reactance [Ohm/km]
 
 # ============ SIGNAL PREPROCESSING ============
+# NOTE: sampling_freq_hz and butterworth_fs are NOT required for normal use.
+# comtrade_to_csv.py stores the real fs in each CSV's 'fs_hz' column and
+# dataset.py reads it automatically per file.
+#
+# Set sampling_freq_hz ONLY as a fallback for legacy CSV files that were
+# converted without the 'fs_hz' column.
+# butterworth_fs will automatically mirror sampling_freq_hz when omitted.
 preprocessing:
   butterworth_enabled: false
-  butterworth_cutoff: 10.0   # Cutoff frequency in Hz (typically 5-15 Hz)
-  butterworth_fs: 1000.0     # Sampling frequency in Hz
-  butterworth_order: 2       # Filter order
-  butterworth_type: 'highpass'
+  butterworth_cutoff: 10.0   # Cutoff frequency [Hz] (typically 5-15 Hz)
+  # butterworth_fs: <omitted> -> automatically equals sampling_freq_hz
+  butterworth_order: 2
+  butterworth_type: highpass
+  # sampling_freq_hz: <omitted> -> read from each CSV 'fs_hz' column
+  mains_freq_hz: 50.0
+  t0_enabled: false
+  t0_coarse_top_k: 5
+  t0_coarse_window_ms: 200.0
+  t0_pre_ms: 20.0
+  t0_post_ms: 60.0
+  t0_threshold_mult: 1.0
 
 model:
   type: cnn1d          # cnn1d | dilated_cnn1d | resnet1d
