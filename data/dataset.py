@@ -43,6 +43,7 @@ from typing import Optional, Tuple, Dict
 DISTANCE_COL = 'distance_km'
 SIGNAL_COLS = ['CT1IA', 'CT1IB', 'CT1IC', 'S1)BUS1UA', 'S1)BUS1UB', 'S1)BUS1UC']
 
+
 class FaultDataset(Dataset):
     """
     Loads a directory of oscillogram CSV files.
@@ -59,36 +60,35 @@ class FaultDataset(Dataset):
         normalize: bool = True,
         signal_scalers: Optional[list] = None,   # list of NUM_CHANNELS fitted StandardScalers
         distance_scaler: Optional[MinMaxScaler] = None,
-        cfg=None,                                # NEW: Config object
+        cfg=None,                                # Config object (optional)
     ):
-        """
+        """Create dataset from a folder of CSV oscillograms.
+
         Args:
-            data_dir       : folder containing *.csv oscillogram files
-            seq_length     : number of time steps expected in each file
-            num_channels   : number of signal channels (default 6)
-            normalize      : apply normalization (mode determined by cfg)
-            signal_scalers : pre-fitted scalers (for test set)
-            distance_scaler: pre-fitted MinMaxScaler for distance
-            cfg            : Config object (needed for p.u. normalization mode and preprocessing)
+            data_dir       : Folder containing *.csv oscillogram files.
+            seq_length     : Number of time steps expected in each file
+                              (also used as target length for t0‑cropped
+                               windows when enabled).
+            num_channels   : Number of signal channels (default 6).
+            normalize      : Apply normalization (mode determined by cfg).
+            signal_scalers : Pre‑fitted scalers (for test set).
+            distance_scaler: Pre‑fitted MinMaxScaler for distance.
+            cfg            : Config object (needed for p.u. normalization
+                              mode and advanced preprocessing).
         """
         if not os.path.isdir(data_dir):
             raise FileNotFoundError(
-                f"Data directory not found: {data_dir}
-"
-                f"Create it and place your oscillogram CSV files inside:
-"
-                f"  {data_dir}/1A_0.5km.csv
-"
-                f"  {data_dir}/1A_1.0km.csv
-"
+                f"Data directory not found: {data_dir}\n"
+                f"Create it and place your oscillogram CSV files inside:\n"
+                f"  {data_dir}/1A_0.5km.csv\n"
+                f"  {data_dir}/1A_1.0km.csv\n"
                 f"  ..."
             )
 
         csv_files = sorted(glob.glob(os.path.join(data_dir, '*.csv')))
         if len(csv_files) == 0:
             raise FileNotFoundError(
-                f"No CSV files found in {data_dir}
-"
+                f"No CSV files found in {data_dir}\n"
                 "Expected files like: 1A_0.5km.csv, 1B_2.0km.csv, ..."
             )
 
@@ -98,10 +98,32 @@ class FaultDataset(Dataset):
         distances_list: list = []
         skipped = 0
 
+        # Optional fault‑inception configuration from cfg
+        self.cfg = cfg
+        enable_t0 = bool(getattr(cfg, 'T0_ENABLED', False)) if cfg is not None else False
+        if enable_t0:
+            from .fault_inception import FaultInceptionParams, detect_t0_and_crop
+
+            fs_hz = float(getattr(cfg, 'SAMPLING_FREQ_HZ', getattr(cfg, 'BUTTERWORTH_FS', 2000.0)))
+            params = FaultInceptionParams(
+                fs_hz=fs_hz,
+                mains_hz=float(getattr(cfg, 'MAINS_FREQ_HZ', 50.0)),
+                coarse_top_k=int(getattr(cfg, 'T0_COARSE_TOP_K', 5)),
+                coarse_window_ms=float(getattr(cfg, 'T0_COARSE_WINDOW_MS', 200.0)),
+                pre_fault_ms=float(getattr(cfg, 'T0_PRE_MS', 20.0)),
+                post_fault_ms=float(getattr(cfg, 'T0_POST_MS', 60.0)),
+                threshold_mult=float(getattr(cfg, 'T0_THRESHOLD_MULT', 1.0)),
+            )
+        else:
+            # Placeholders to keep type checkers happy
+            FaultInceptionParams = None  # type: ignore[assignment]
+            detect_t0_and_crop = None  # type: ignore[assignment]
+            params = None
+
         for fpath in csv_files:
             try:
                 df = pd.read_csv(fpath)
-                
+
                 # ---- validate columns ----
                 missing = [c for c in [DISTANCE_COL] + SIGNAL_COLS if c not in df.columns]
                 if missing:
@@ -112,10 +134,26 @@ class FaultDataset(Dataset):
                 # ---- target: constant in the whole file ----
                 distance = float(df[DISTANCE_COL].iloc[0])
 
-                # ---- signals: (T, 6) -> (6, T) ----
-                sig = df[SIGNAL_COLS].values.astype(np.float32) # (T, 6)
+                # ---- raw signals: shape (T, 6) ----
+                sig = df[SIGNAL_COLS].values.astype(np.float32)
 
-                # Pad or trim to seq_length
+                # Optional fault‑inception detection and cropping
+                if enable_t0 and detect_t0_and_crop is not None and params is not None:
+                    try:
+                        sig, _t0_local = detect_t0_and_crop(
+                            sig,
+                            params,
+                            current_channel_indices=(0, 1, 2),
+                            target_length=seq_length,
+                        )
+                    except Exception as e:  # pragma: no cover - robust to runtime issues
+                        print(
+                            f" [WARN] t0 detection failed for {os.path.basename(fpath)}: {e}. "
+                            "Falling back to simple pad/trim."
+                        )
+
+                # At this point sig has shape (T_eff, 6). For non‑t0 path
+                # we still need to pad/trim to seq_length.
                 T = sig.shape[0]
                 if T < seq_length:
                     pad = np.zeros((seq_length - T, sig.shape[1]), dtype=np.float32)
@@ -123,7 +161,9 @@ class FaultDataset(Dataset):
                 elif T > seq_length:
                     sig = sig[:seq_length, :]
 
-                sig = sig.T # (6, seq_length)
+                # Convert to (6, seq_length)
+                sig = sig.T
+
                 signals_list.append(sig)
                 distances_list.append(distance)
 
@@ -139,25 +179,28 @@ class FaultDataset(Dataset):
         self.seq_length = seq_length
         self.num_channels = num_channels
         self.num_samples = len(signals_list)
-        self.cfg = cfg # store config
 
         # signals: (N, 6, seq_length) / distances: (N,)
-        self.signals = np.stack(signals_list, axis=0) # (N, 6, T)
-        self.distances = np.array(distances_list, dtype=np.float32) # (N,)
+        self.signals = np.stack(signals_list, axis=0)  # (N, 6, T)
+        self.distances = np.array(distances_list, dtype=np.float32)  # (N,)
 
         print(f" Signal tensor shape : {self.signals.shape}")
         print(f" Distance range      : [{self.distances.min():.2f}, {self.distances.max():.2f}] km")
 
-        # ============ PREPROCESSING (NEW) ============
+        # ============ PREPROCESSING (Butterworth etc.) ============
         if cfg and getattr(cfg, 'BUTTERWORTH_ENABLED', False):
             from .preprocessing import apply_butterworth_filter
-            print(f" Applying Butterworth {cfg.BUTTERWORTH_TYPE} filter (cutoff={cfg.BUTTERWORTH_CUTOFF} Hz)...")
+
+            print(
+                f" Applying Butterworth {cfg.BUTTERWORTH_TYPE} filter "
+                f"(cutoff={cfg.BUTTERWORTH_CUTOFF} Hz)..."
+            )
             self.signals = apply_butterworth_filter(self.signals, cfg)
 
         # ============ NORMALIZATION ============
         if normalize:
             norm_mode = getattr(cfg, 'NORMALIZATION_MODE', 'standard') if cfg else 'standard'
-            
+
             if norm_mode == 'pu':
                 # === PER-UNIT (p.u.) NORMALIZATION ===
                 print(" Applying physical per-unit (p.u.) normalization...")
@@ -166,15 +209,15 @@ class FaultDataset(Dataset):
 
                 # Physical base quantities
                 Unom_kv = cfg.LINE_UNOM_KV
-                L_km    = cfg.LINE_L_KM
-                r1      = cfg.LINE_R1_OHM_KM
-                x1      = cfg.LINE_X1_OHM_KM
+                L_km = cfg.LINE_L_KM
+                r1 = cfg.LINE_R1_OHM_KM
+                x1 = cfg.LINE_X1_OHM_KM
 
                 # Calculate line impedance
-                Z1_total = ((r1 * L_km)**2 + (x1 * L_km)**2)**0.5
-                
+                Z1_total = ((r1 * L_km) ** 2 + (x1 * L_km) ** 2) ** 0.5
+
                 # Base voltage (phase-to-ground) in Volts
-                Ubase_V = (Unom_kv * 1000) / (3**0.5)
+                Ubase_V = (Unom_kv * 1000) / (3 ** 0.5)
                 # Base current in Amperes
                 Ibase_A = Ubase_V / Z1_total
 
@@ -195,7 +238,7 @@ class FaultDataset(Dataset):
                 self.signal_scalers = None
                 self.distance_scaler = None
                 print(" p.u. normalization complete")
-            
+
             else:
                 # === STANDARD STATISTICAL NORMALIZATION ===
                 # Per-channel StandardScaler: each channel has its own mean/std
@@ -229,7 +272,7 @@ class FaultDataset(Dataset):
                     self.distances = self.distance_scaler.transform(
                         self.distances.reshape(-1, 1)
                     ).flatten()
-                
+
                 print(" Per-channel normalization applied (standard mode)")
         else:
             self.signal_scalers = None
@@ -241,22 +284,21 @@ class FaultDataset(Dataset):
         return self.num_samples
 
     def __getitem__(self, idx: int) -> Tuple[torch.Tensor, torch.Tensor]:
-        """
-        Returns:
-            signal   : FloatTensor (NUM_CHANNELS, SEQ_LENGTH)
-            distance : FloatTensor scalar wrapped in shape (1,)
-        """
+        """Return (signal, distance) pair for given index."""
+
         signal = torch.from_numpy(self.signals[idx])  # (6, T)
         distance = torch.tensor([self.distances[idx]], dtype=torch.float32)
         return signal, distance
 
     def inverse_transform_distance(self, normalized: np.ndarray) -> np.ndarray:
         """Convert normalized predictions back to km."""
+
         if self.distance_scaler is not None:
             return self.distance_scaler.inverse_transform(
                 normalized.reshape(-1, 1)
             ).flatten()
         return normalized
+
 
 class DataLoaderFactory:
     """Factory for creating train/test DataLoaders with proper preprocessing."""
@@ -266,20 +308,22 @@ class DataLoaderFactory:
         data_dir: str,
         cfg,
     ) -> Tuple[DataLoader, DataLoader, Dict]:
-        """
-        Create train and test DataLoaders.
+        """Create train and test DataLoaders.
+
         Args:
-            data_dir : directory with oscillogram CSV files
-            cfg      : Config object
+            data_dir : Directory with oscillogram CSV files.
+            cfg      : Config object.
+
         Returns:
             (train_loader, test_loader, scalers_dict)
         """
+
         full_dataset = FaultDataset(
             data_dir=data_dir,
             seq_length=cfg.SEQ_LENGTH,
             num_channels=cfg.NUM_CHANNELS,
             normalize=cfg.NORMALIZE_DATA,
-            cfg=cfg, # NEW: pass Config object
+            cfg=cfg,  # Pass Config object
         )
 
         scalers = {
@@ -291,22 +335,28 @@ class DataLoaderFactory:
         test_size = len(full_dataset) - train_size
 
         train_dataset, test_dataset = random_split(
-            full_dataset, [train_size, test_size],
+            full_dataset,
+            [train_size, test_size],
             generator=torch.Generator().manual_seed(cfg.SEED),
         )
 
         pin = cfg.DEVICE == 'cuda'
         train_loader = DataLoader(
-            train_dataset, batch_size=cfg.BATCH_SIZE, shuffle=True,
-            num_workers=0, pin_memory=pin
+            train_dataset,
+            batch_size=cfg.BATCH_SIZE,
+            shuffle=True,
+            num_workers=0,
+            pin_memory=pin,
         )
         test_loader = DataLoader(
-            test_dataset, batch_size=cfg.BATCH_SIZE, shuffle=False,
-            num_workers=0, pin_memory=pin
+            test_dataset,
+            batch_size=cfg.BATCH_SIZE,
+            shuffle=False,
+            num_workers=0,
+            pin_memory=pin,
         )
 
-        print(f"
- Train : {train_size} samples")
+        print(f"\n Train : {train_size} samples")
         print(f" Test  : {test_size} samples")
         print(f" Batch : {cfg.BATCH_SIZE}")
 
