@@ -34,7 +34,7 @@ sys.path.insert(0, str(REPO_ROOT / "data"))
 PARAMS_OVERRIDE = dict(
     mains_hz         = 50.0,   # fundamental frequency of the power system, Hz
     coarse_top_k     = 5,      # how many D4 peaks to consider for coarse t0
-    coarse_window_ms = 200.0,  # half-window around coarse t0, ms
+    coarse_window_ms = 2000.0,  # half-window around coarse t0, ms
     pre_fault_ms     = 20.0,   # pre-fault history kept when cropping (no effect on detection)
     post_fault_ms    = 60.0,   # post-fault window kept when cropping  (no effect on detection)
     threshold_mult   = 1.0,    # adaptive threshold multiplier — lower = fires earlier
@@ -52,12 +52,12 @@ PARAMS_OVERRIDE = dict(
 #    Set a key to None to keep the automatic pattern-based guess.
 # ===========================================================================
 CHANNEL_NAMES = dict(
-    ia = None,   # e.g. "CT1IA"   or  "Ia"   or  "I_A"   — phase A current
-    ib = None,   # e.g. "CT1IB"
-    ic = None,   # e.g. "CT1IC"
-    ua = None,   # e.g. "BUS1UA" or  "Ua"   or  "U_A"   — phase A voltage (display only)
-    ub = None,   # e.g. "BUS1UB"
-    uc = None,   # e.g. "BUS1UC"
+    ia = "CT1IAprim",   # e.g. "CT1IA"   or  "Ia"   or  "I_A"   — phase A current
+    ib = "CT1IBprim",   # e.g. "CT1IB"
+    ic = "CT1ICprim",   # e.g. "CT1IC"
+    ua = "S1) VT1UAprim",   # e.g. "BUS1UA" or  "Ua"   or  "U_A"   — phase A voltage (display only)
+    ub = "S1) VT1UBprim",   # e.g. "BUS1UB"
+    uc = "S1) VT1UCprim",   # e.g. "BUS1UC"
 )
 
 # ===========================================================================
