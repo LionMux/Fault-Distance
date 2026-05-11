@@ -5,12 +5,7 @@ Run with: pytest symseq/tests/test_adapter.py -v
 
 import numpy as np
 import pytest
-import sys, os
-
-# Позволяем импортировать src/fault_distance из любого места
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', '..', 'src'))
-
-from fault_distance.features.symseq_adapter import (
+from symseq.adapter import (
     compute_symseq_batch,
     compute_symseq_feature_vector,
     CHANNEL_ORDER,

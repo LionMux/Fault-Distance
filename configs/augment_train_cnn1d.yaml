@@ -12,6 +12,11 @@ training:
   batch_size: 32
   learning_rate: 0.001
 
+preprocessing:
+  remove_dc_enabled: true
+  symseq_enabled: true
+  t0_enabled: true
+
 augmentation:
   input_dir: data/data_training
   train_aug_dir: data/data_augmented_train

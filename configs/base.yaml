@@ -11,7 +11,7 @@ data:
   data_dir: data/data_training
   train_split: 0.8
   num_channels: 6
-  seq_length: 400
+  seq_length: 240         # fs=2000 Hz, [50ms pre + 70ms post] = 120 ms => 240 samples
   normalize: true
   normalization_mode: standard  # 'standard' | 'pu'
 
@@ -22,27 +22,21 @@ line_params:
   x1_ohm_km: 0.4155    # Positive sequence reactance [Ohm/km]
 
 # ============ SIGNAL PREPROCESSING ============
-# NOTE: sampling_freq_hz and butterworth_fs are NOT required for normal use.
+# NOTE: sampling_freq_hz is NOT required for normal use.
 # comtrade_to_csv.py stores the real fs in each CSV's 'fs_hz' column and
 # dataset.py reads it automatically per file.
 #
 # Set sampling_freq_hz ONLY as a fallback for legacy CSV files that were
 # converted without the 'fs_hz' column.
-# butterworth_fs will automatically mirror sampling_freq_hz when omitted.
 preprocessing:
-  butterworth_enabled: false
-  butterworth_cutoff: 10.0   # Cutoff frequency [Hz] (typically 5-15 Hz)
-  # butterworth_fs: <omitted> -> automatically equals sampling_freq_hz
-  butterworth_order: 2
-  butterworth_type: highpass
   # sampling_freq_hz: <omitted> -> read from each CSV 'fs_hz' column
   mains_freq_hz: 50.0
-  t0_enabled: false
-  t0_coarse_top_k: 5
-  t0_coarse_window_ms: 200.0
-  t0_pre_ms: 20.0
-  t0_post_ms: 60.0
-  t0_threshold_mult: 1.0
+  remove_dc_enabled: true         # notebook primary DC removal method
+  t0_enabled: true                # notebook: enable fault-inception cropping
+  t0_pre_ms: 50.0                 # notebook: 50 ms pre-fault
+  t0_post_ms: 70.0                # notebook: 70 ms post-fault (после t0)
+  t0_eta_i: 0.5                   # notebook: current-rise threshold (50%)
+  t0_eta_u: 0.85                  # notebook: voltage-drop threshold (85%)
 
 model:
   type: cnn1d          # cnn1d | dilated_cnn1d | resnet1d
@@ -71,8 +65,20 @@ early_stopping:
 checkpointing:
   save_dir: checkpoints
   save_best_only: true
-  save_every_n_epochs: 10
+  save_every_n_epochs: 5
 
 logging:
   log_dir: logs
   log_every_n_batches: 50
+
+# ============ DIPLOMA ACTIVATION EXPORT (defaults disabled) ============
+activation_export:
+  enabled: false
+  layers: auto
+  capture_epochs: ["first", "best", "every_n:5"]
+  probe_mode: first_val_sample
+  export_formats: ["png", "csv"]
+  output_dir: activations
+  max_channels_to_plot: 8
+  dpi: 300
+  strict_activation_export: false

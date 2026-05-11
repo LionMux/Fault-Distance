@@ -7,8 +7,8 @@ Expected file layout:
         ...
 
 Each CSV file represents ONE fault event (one training sample).
-The data_training/ subfolder is intentionally separate from the data/ Python 
-package (which contains dataset.py, preprocessing.py, __init__.py) so that 
+The data_training/ subfolder is intentionally separate from the data/ Python
+package (which contains dataset.py, preprocessing.py, __init__.py) so that
 CSV files and source files never get mixed together.
 
 CSV format (rows = time steps, columns):
@@ -17,7 +17,7 @@ CSV format (rows = time steps, columns):
     distance_km — target label (constant per file, first column)
     fs_hz       — sampling frequency in Hz written by comtrade_to_csv.py
                   (optional; if absent, cfg.SAMPLING_FREQ_HZ is used as
-                  fallback so old CSV files without this column still work)
+                   fallback so old CSV files without this column still work)
 
 Signal channels (6 expected by default):
     0: CT1IA    - Phase A current [A]
@@ -27,8 +27,20 @@ Signal channels (6 expected by default):
     4: BUS1UB   - Phase B voltage [kV]
     5: BUS1UC   - Phase C voltage [kV]
 
+When cfg.SYMSEQ_ENABLED is True the dataset appends 6 phasor-magnitude
+channels (|I1|,|I2|,|I0|,|U1|,|U2|,|U0|) giving a 12-channel tensor:
+    0-2 : IA, IB, IC            (time-domain)
+    3-5 : |I1|, |I2|, |I0|      (phasor magnitudes, constant over time)
+    6-8 : UA, UB, UC            (time-domain)
+    9-11: |U1|, |U2|, |U0|      (phasor magnitudes, constant over time)
+
+This matches the notebook pipeline where the final tensor contains both
+phase and symmetrical-component channels, but here the symmetrical
+components are obtained via FFT-based phasor estimation (as required by
+the project specification) rather than instantaneous Fortescue.
+
 Outputs:
-    signal tensor : (NUM_CHANNELS, SEQ_LENGTH) e.g. (6, 400)
+    signal tensor : (NUM_CHANNELS, SEQ_LENGTH) e.g. (12, 400)
     distance      : scalar [km]
 """
 
@@ -39,12 +51,19 @@ import pandas as pd
 import torch
 from torch.utils.data import Dataset, DataLoader, random_split
 from sklearn.preprocessing import StandardScaler, MinMaxScaler
-from typing import Optional, Tuple, Dict
+from typing import Optional, Tuple, Dict, List
 
 # Known column names in the CSV
 DISTANCE_COL = 'distance_km'
 FS_COL        = 'fs_hz'   # written by comtrade_to_csv.py; optional in old files
-SIGNAL_COLS = ['CT1IA', 'CT1IB', 'CT1IC', 'S1)BUS1UA', 'S1)BUS1UB', 'S1)BUS1UC']
+SIGNAL_COLS = ['CT1IA', 'CT1IB', 'CT1IC', 'S1) BUS1UA', 'S1) BUS1UB', 'S1) BUS1UC']
+
+# --- notebook-matching channel order for the 12-channel tensor ---
+# Phase channels (0-2, 6-8) come first; phasor channels (3-5, 9-11) follow.
+PHASE_CURRENT_IDX = [0, 1, 2]
+PHASE_VOLTAGE_IDX = [6, 7, 8]
+SYMSEQ_CURRENT_IDX = [3, 4, 5]
+SYMSEQ_VOLTAGE_IDX = [9, 10, 11]
 
 
 class FaultDataset(Dataset):
@@ -81,7 +100,8 @@ class FaultDataset(Dataset):
             seq_length     : Number of time steps expected in each file
                               (also used as target length for t0-cropped
                                windows when enabled).
-            num_channels   : Number of signal channels (default 6).
+            num_channels   : Number of signal channels (default 6; becomes 12
+                              when symseq is enabled).
             normalize      : Apply normalization (mode determined by cfg).
             signal_scalers : Pre-fitted scalers (for test set).
             distance_scaler: Pre-fitted MinMaxScaler for distance.
@@ -113,6 +133,8 @@ class FaultDataset(Dataset):
         # Optional fault-inception configuration from cfg
         self.cfg = cfg
         enable_t0 = bool(getattr(cfg, 'T0_ENABLED', False)) if cfg is not None else False
+        enable_symseq = bool(getattr(cfg, 'SYMSEQ_ENABLED', False)) if cfg is not None else False
+        enable_remove_dc = bool(getattr(cfg, 'REMOVE_DC_ENABLED', False)) if cfg is not None else False
 
         # Fallback fs when the CSV has no fs_hz column (legacy files)
         _cfg_fs_fallback = (
@@ -120,18 +142,26 @@ class FaultDataset(Dataset):
             if cfg is not None
             else 2000.0
         )
+        _cfg_mains_hz = float(getattr(cfg, 'MAINS_FREQ_HZ', 50.0)) if cfg is not None else 50.0
 
         if enable_t0:
             from .fault_inception import FaultInceptionParams, detect_t0_and_crop
-            _t0_mains_hz         = float(getattr(cfg, 'MAINS_FREQ_HZ',       50.0))
-            _t0_coarse_top_k     = int(  getattr(cfg, 'T0_COARSE_TOP_K',       5))
-            _t0_coarse_window_ms = float(getattr(cfg, 'T0_COARSE_WINDOW_MS', 200.0))
-            _t0_pre_ms           = float(getattr(cfg, 'T0_PRE_MS',            20.0))
-            _t0_post_ms          = float(getattr(cfg, 'T0_POST_MS',           60.0))
-            _t0_threshold_mult   = float(getattr(cfg, 'T0_THRESHOLD_MULT',     1.0))
+            _t0_pre_ms  = float(getattr(cfg, 'T0_PRE_MS',  50.0))
+            _t0_post_ms = float(getattr(cfg, 'T0_POST_MS', 70.0))
+            _t0_eta_I   = float(getattr(cfg, 'T0_ETA_I',   0.5))
+            _t0_eta_U   = float(getattr(cfg, 'T0_ETA_U',   0.85))
         else:
             FaultInceptionParams = None  # type: ignore[assignment]
             detect_t0_and_crop   = None  # type: ignore[assignment]
+
+        # Lazy imports for optional features
+        if enable_remove_dc:
+            from .preprocessing import center_by_prehistory, remove_dc_period
+        if enable_symseq:
+            import sys
+            sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
+
+        norm_mode_pre = getattr(cfg, 'NORMALIZATION_MODE', 'standard') if cfg else 'standard'
 
         for fpath in csv_files:
             try:
@@ -161,24 +191,27 @@ class FaultDataset(Dataset):
                 # ---- raw signals: shape (T, num_channels) ----
                 sig = df[SIGNAL_COLS].values.astype(np.float32)
 
+                # ---- notebook stage 2: centering + DC-period removal ----
+                if enable_remove_dc:
+                    sig = center_by_prehistory(sig.T, fs=file_fs_hz, pre_ms=20.0).T
+                    sig = remove_dc_period(sig.T, fs=file_fs_hz, f_net=_cfg_mains_hz).T
+
                 # ---- optional fault-inception detection and cropping ----
                 if enable_t0 and detect_t0_and_crop is not None:
-                    # Build per-file params using the fs read from THIS file
                     params = FaultInceptionParams(
                         fs_hz=file_fs_hz,
-                        mains_hz=_t0_mains_hz,
-                        coarse_top_k=_t0_coarse_top_k,
-                        coarse_window_ms=_t0_coarse_window_ms,
+                        mains_hz=_cfg_mains_hz,
                         pre_fault_ms=_t0_pre_ms,
                         post_fault_ms=_t0_post_ms,
-                        threshold_mult=_t0_threshold_mult,
+                        eta_I=_t0_eta_I,
+                        eta_U=_t0_eta_U,
                     )
                     try:
                         sig, _t0_local = detect_t0_and_crop(
                             sig,
                             params,
                             current_channel_indices=(0, 1, 2),
-                            target_length=seq_length,
+                            voltage_channel_indices=(3, 4, 5),
                         )
                     except Exception as e:  # pragma: no cover
                         print(
@@ -187,16 +220,44 @@ class FaultDataset(Dataset):
                             "Falling back to simple pad/trim."
                         )
 
-                # Pad / trim to seq_length (non-t0 path or t0 fallback)
-                T = sig.shape[0]
-                if T < seq_length:
-                    pad = np.zeros((seq_length - T, sig.shape[1]), dtype=np.float32)
-                    sig = np.vstack([sig, pad])
-                elif T > seq_length:
-                    sig = sig[:seq_length, :]
+                # IMPORTANT:
+                # После t0-crop мы больше НЕ делаем pad/trim до SEQ_LENGTH
+                # (иначе появляется обрезанное/ресэмплированное окно и/или нули).
+                # Длина должна совпадать за счёт параметров t0_pre_ms/t0_post_ms.
+                #
+                # В fallback-сценариях длина может быть разной — это можно
+                # увидеть как inconsistency, поэтому padding отключаем полностью.
 
-                # Convert to (num_channels, seq_length)
-                sig = sig.T
+                # Convert to (num_channels, seq_length)  -> currently 6 channels
+                sig = sig.T   # (6, seq_length)
+
+                # ---- optional symmetrical components (notebook stage 5, adapted) ----
+                # Requirement: if pu mode -> symseq must be computed from pu-values of currents/voltages.
+                if enable_symseq:
+                    if norm_mode_pre == 'pu':
+                        Unom_kv = cfg.LINE_UNOM_KV
+                        S_base_MVA = getattr(cfg, 'S_BASE_MVA', 100.0)
+                        Ibase_A = (S_base_MVA * 1_000_000) / (3 ** 0.5 * Unom_kv * 1000)
+                        # currents IA,IB,IC -> p.u.
+                        sig[0:3, :] /= Ibase_A
+                        # voltages UA,UB,UC -> p.u.
+                        sig[3:6, :] /= Unom_kv
+
+                    # Compute sliding-window sequence magnitudes (time-varying)
+                    from .preprocessing import sliding_window_symseq
+                    sym_ch = sliding_window_symseq(
+                        sig, fs=file_fs_hz, f0=_cfg_mains_hz, window_cycles=1
+                    )  # (6, seq_length)  -> [|I1|,|I2|,|I0|,|U1|,|U2|,|U0|]
+
+                    # Notebook channel order:
+                    # IA, IB, IC, |I1|, |I2|, |I0|, UA, UB, UC, |U1|, |U2|, |U0|
+                    sig = np.vstack([
+                        sig[0:3, :],      # IA, IB, IC (possibly pu)
+                        sym_ch[0:3, :],   # |I1|, |I2|, |I0|  (sliding-window)
+                        sig[3:6, :],      # UA, UB, UC (possibly pu)
+                        sym_ch[3:6, :],   # |U1|, |U2|, |U0|  (sliding-window)
+                    ])   # (12, seq_length)
+                    num_channels = 12
 
                 signals_list.append(sig)
                 distances_list.append(distance)
@@ -221,16 +282,6 @@ class FaultDataset(Dataset):
         print(f" Signal tensor shape : {self.signals.shape}")
         print(f" Distance range      : [{self.distances.min():.2f}, {self.distances.max():.2f}] km")
 
-        # ============ PREPROCESSING (Butterworth etc.) ============
-        if cfg and getattr(cfg, 'BUTTERWORTH_ENABLED', False):
-            from .preprocessing import apply_butterworth_filter
-            print(
-                f" Applying Butterworth {cfg.BUTTERWORTH_TYPE} filter "
-                f"(cutoff={cfg.BUTTERWORTH_CUTOFF} Hz, "
-                f"fs={cfg.BUTTERWORTH_FS} Hz)..."
-            )
-            self.signals = apply_butterworth_filter(self.signals, cfg)
-
         # ============ NORMALIZATION ============
         if normalize:
             norm_mode = getattr(cfg, 'NORMALIZATION_MODE', 'standard') if cfg else 'standard'
@@ -240,25 +291,15 @@ class FaultDataset(Dataset):
                 if not cfg:
                     raise ValueError("cfg must be provided for p.u. normalization mode")
 
-                Unom_kv  = cfg.LINE_UNOM_KV
-                L_km     = cfg.LINE_L_KM
-                r1       = cfg.LINE_R1_OHM_KM
-                x1       = cfg.LINE_X1_OHM_KM
-                Z1_total = ((r1 * L_km) ** 2 + (x1 * L_km) ** 2) ** 0.5
-                Ubase_V  = (Unom_kv * 1000) / (3 ** 0.5)
-                Ibase_A  = Ubase_V / Z1_total
+                L_km = cfg.LINE_L_KM
+                # In pu mode we already converted phase quantities to p.u. inside the per-file
+                # preprocessing step (so symseq is computed from p.u. values). Here we only
+                # normalize the distance target.
+                self.distances /= L_km  # distance [km] -> distance_pu
 
-                print(f" Unom = {Unom_kv} kV, L = {L_km} km")
-                print(f" Z1_total = {Z1_total:.2f} Ohm")
-                print(f" Ubase = {Ubase_V:.1f} V, Ibase = {Ibase_A:.1f} A")
-
-                self.signals[:, 0:3, :] /= Ibase_A    # currents [A] -> [p.u.]
-                self.signals[:, 3:6, :] /= Unom_kv    # voltages [kV] -> [p.u.]
-                self.distances           /= L_km       # distance [km] -> [0,1]
-
-                self.signal_scalers  = None
+                self.signal_scalers = None
                 self.distance_scaler = None
-                print(" p.u. normalization complete")
+                print(" p.u. distance normalization complete")
 
             else:
                 # Per-channel StandardScaler

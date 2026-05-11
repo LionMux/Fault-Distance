@@ -3,8 +3,8 @@
 import os
 import yaml
 import torch
-from dataclasses import dataclass
-from typing import Optional
+from dataclasses import dataclass, field
+from typing import Any, List, Optional
 
 
 @dataclass
@@ -14,13 +14,18 @@ class Config:
     # ============ DEVICE ============
     DEVICE: str = 'cuda' if torch.cuda.is_available() else 'cpu'
 
+    # ============ OUTPUT / ARTIFACTS ============
+    # Diploma-level plots copied into output/thesis/
+    # (в compare_models.py обычно выключаем, чтобы не раздувать output/thesis)
+    SAVE_THESIS_PLOTS: bool = True
+
     # ============ DATA PATHS ============
     DATA_DIR: str = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'data', 'data_training')
     TRAIN_SPLIT: float = 0.8  # 80% train, 20% test
 
     # ============ DATA FORMAT ============
-    NUM_CHANNELS: int = 6    # Number of signal channels (Ia, Ib, Ic, Ua, Ub, Uc)
-    SEQ_LENGTH: int = 400    # Expected number of time steps per file
+    NUM_CHANNELS: int = 12   # Number of signal channels (6 phase + 6 phasor magnitudes)
+    SEQ_LENGTH: int = 240    # Expected number of time steps per file (fs=2000 Hz, [50ms pre + 70ms post] = 240 samples)
     NORMALIZE_DATA: bool = True
 
     # ============ NORMALIZATION MODE ============
@@ -34,31 +39,28 @@ class Config:
     LINE_R1_OHM_KM: float = 0.20046
     LINE_X1_OHM_KM: float = 0.4155
 
+    # ============ BASE POWER for p.u. normalization ============
+    S_BASE_MVA: float = 100.0
+
     # ============ SIGNAL PREPROCESSING ============
-    # --- Butterworth high-pass filter (removes DC / aperiodic component) ---
-    BUTTERWORTH_ENABLED: bool = False
-    BUTTERWORTH_CUTOFF: float = 10.0    # Cutoff frequency [Hz]
-    # Sampling frequency used only by the Butterworth filter.
-    # comtrade_to_csv.py stores the real fs in every CSV column 'fs_hz';
-    # the t0-detection algorithm reads that column automatically.
-    # Set this to match your data if Butterworth filtering is enabled.
-    BUTTERWORTH_FS: float = 2000.0      # [Hz] — fallback for Butterworth
-    BUTTERWORTH_ORDER: int = 2
-    BUTTERWORTH_TYPE: str = 'highpass'
+    # --- DC-period removal (notebook stage 2) ---
+    REMOVE_DC_ENABLED: bool = True      # Enable rolling-mean DC removal (notebook method)
+
+    # --- Symmetrical components (phasor-based, notebook stage 5 adapted) ---
+    SYMSEQ_ENABLED: bool = True         # Append |I1|,|I2|,|I0|,|U1|,|U2|,|U0|
 
     # --- Fault-inception (t0) detection ---
     # SAMPLING_FREQ_HZ is a *fallback* value used only for CSV files that
     # were converted without the 'fs_hz' column (legacy files).
     # New files produced by comtrade_to_csv.py carry their own fs_hz column
     # and it is used automatically — no manual configuration needed.
-    SAMPLING_FREQ_HZ: float = 2000.0   # fallback [Hz] for legacy CSV files
+    SAMPLING_FREQ_HZ: float = 5000.0   # fallback [Hz] for legacy CSV files (notebook Fs)
     MAINS_FREQ_HZ: float = 50.0        # Power-system frequency [Hz]
-    T0_ENABLED: bool = False            # Enable fault-inception cropping
-    T0_COARSE_TOP_K: int = 5
-    T0_COARSE_WINDOW_MS: float = 200.0
-    T0_PRE_MS: float = 20.0
-    T0_POST_MS: float = 60.0
-    T0_THRESHOLD_MULT: float = 1.0
+    T0_ENABLED: bool = True             # Enable fault-inception cropping (notebook)
+    T0_PRE_MS: float = 50.0             # notebook: 50 ms pre-fault
+    T0_POST_MS: float = 70.0            # notebook: 70 ms post-fault
+    T0_ETA_I: float = 0.5               # notebook: current-rise threshold (50%)
+    T0_ETA_U: float = 0.85              # notebook: voltage-drop threshold (85%)
 
     # ============ MODEL ARCHITECTURE ============
     MODEL_TYPE: str = 'cnn1d'  # 'cnn1d', 'dilated_cnn1d', 'resnet1d'
@@ -101,6 +103,21 @@ class Config:
     # ============ EXPERIMENT (YAML-mode) ============
     EXPERIMENT_NAME: str = 'unnamed'
 
+    # ============ DIPLOMA ACTIVATION EXPORT ============
+    # Additive, disabled by default.
+    ACTIVATION_EXPORT_ENABLED: bool = False
+    # "auto", "auto_all_conv_blocks", or explicit list of module names.
+    ACTIVATION_EXPORT_LAYERS: Any = "auto"
+    # e.g. ["first", "best", "every_n:5"].
+    ACTIVATION_EXPORT_CAPTURE_EPOCHS: List[str] = field(default_factory=lambda: ["first", "best", "every_n:5"])
+    ACTIVATION_EXPORT_PROBE_MODE: str = "first_val_sample"
+    ACTIVATION_EXPORT_EXPORT_FORMATS: List[str] = field(default_factory=lambda: ["png", "csv"])
+    # Saved under run_dir/ACTIVATION_EXPORT_OUTPUT_DIR
+    ACTIVATION_EXPORT_OUTPUT_DIR: str = "activations"
+    ACTIVATION_EXPORT_MAX_CHANNELS_TO_PLOT: int = 8
+    ACTIVATION_EXPORT_DPI: int = 300
+    STRICT_ACTIVATION_EXPORT: bool = False
+
     def __post_init__(self):
         os.makedirs(self.SAVE_DIR, exist_ok=True)
         os.makedirs(self.LOG_DIR, exist_ok=True)
@@ -116,18 +133,13 @@ class Config:
             'DEVICE': ['DEVICE'],
             'DATA': ['DATA_DIR', 'TRAIN_SPLIT', 'NUM_CHANNELS', 'SEQ_LENGTH', 'NORMALIZE_DATA', 'NORMALIZATION_MODE'],
             'PREPROCESSING': [
-                'BUTTERWORTH_ENABLED',
-                'BUTTERWORTH_CUTOFF',
-                'BUTTERWORTH_FS',
-                'BUTTERWORTH_ORDER',
                 'SAMPLING_FREQ_HZ',
                 'MAINS_FREQ_HZ',
                 'T0_ENABLED',
-                'T0_COARSE_TOP_K',
-                'T0_COARSE_WINDOW_MS',
                 'T0_PRE_MS',
                 'T0_POST_MS',
-                'T0_THRESHOLD_MULT',
+                'T0_ETA_I',
+                'T0_ETA_U',
             ],
             'LINE_PARAMS': ['LINE_UNOM_KV', 'LINE_L_KM', 'LINE_R1_OHM_KM', 'LINE_X1_OHM_KM'],
             'MODEL': ['MODEL_TYPE', 'NUM_FILTERS', 'KERNEL_SIZE', 'DROPOUT'],
@@ -137,6 +149,17 @@ class Config:
             'CHECKPOINTING': ['SAVE_DIR', 'SAVE_BEST_ONLY', 'SAVE_EVERY_N_EPOCHS'],
             'LOGGING': ['LOG_DIR', 'LOG_EVERY_N_BATCHES', 'SEED', 'VALIDATE_EVERY_N_EPOCHS'],
             'EXPERIMENT': ['EXPERIMENT_NAME'],
+            'ACTIVATION_EXPORT': [
+                'ACTIVATION_EXPORT_ENABLED',
+                'ACTIVATION_EXPORT_LAYERS',
+                'ACTIVATION_EXPORT_CAPTURE_EPOCHS',
+                'ACTIVATION_EXPORT_PROBE_MODE',
+                'ACTIVATION_EXPORT_EXPORT_FORMATS',
+                'ACTIVATION_EXPORT_OUTPUT_DIR',
+                'ACTIVATION_EXPORT_MAX_CHANNELS_TO_PLOT',
+                'ACTIVATION_EXPORT_DPI',
+                'STRICT_ACTIVATION_EXPORT',
+            ],
         }
 
         for section, keys in sections.items():
@@ -251,10 +274,7 @@ def load_config(yaml_path: str, overrides: dict = None) -> 'Config':
     device_raw = raw.get('device', 'auto')
     device = ('cuda' if torch.cuda.is_available() else 'cpu') if device_raw == 'auto' else device_raw
 
-    # BUTTERWORTH_FS: prefer explicit yaml key; otherwise mirror SAMPLING_FREQ_HZ
-    # so both filters share a single source of truth when set in YAML.
     _sampling_freq = prep_sec.get('sampling_freq_hz', 2000.0)
-    _butterworth_fs = prep_sec.get('butterworth_fs', _sampling_freq)
 
     cfg = Config(
         EXPERIMENT_NAME=raw.get('experiment_name', 'unnamed'),
@@ -266,7 +286,7 @@ def load_config(yaml_path: str, overrides: dict = None) -> 'Config':
             os.path.dirname(os.path.abspath(__file__)), 'data', 'data_training')
         ),
         TRAIN_SPLIT=data_sec.get('train_split', 0.8),
-        NUM_CHANNELS=data_sec.get('num_channels', 6),
+        NUM_CHANNELS=data_sec.get('num_channels', 12),
         SEQ_LENGTH=data_sec.get('seq_length', 400),
         NORMALIZE_DATA=data_sec.get('normalize', True),
         NORMALIZATION_MODE=data_sec.get('normalization_mode', 'standard'),
@@ -278,19 +298,15 @@ def load_config(yaml_path: str, overrides: dict = None) -> 'Config':
         LINE_X1_OHM_KM=line_sec.get('x1_ohm_km', 0.4155),
 
         # preprocessing
-        BUTTERWORTH_ENABLED=prep_sec.get('butterworth_enabled', False),
-        BUTTERWORTH_CUTOFF=prep_sec.get('butterworth_cutoff', 10.0),
-        BUTTERWORTH_FS=_butterworth_fs,
-        BUTTERWORTH_ORDER=prep_sec.get('butterworth_order', 2),
-        BUTTERWORTH_TYPE=prep_sec.get('butterworth_type', 'highpass'),
         SAMPLING_FREQ_HZ=_sampling_freq,
         MAINS_FREQ_HZ=prep_sec.get('mains_freq_hz', 50.0),
+        REMOVE_DC_ENABLED=prep_sec.get('remove_dc_enabled', False),
+        SYMSEQ_ENABLED=prep_sec.get('symseq_enabled', True),
         T0_ENABLED=prep_sec.get('t0_enabled', False),
-        T0_COARSE_TOP_K=prep_sec.get('t0_coarse_top_k', 5),
-        T0_COARSE_WINDOW_MS=prep_sec.get('t0_coarse_window_ms', 200.0),
-        T0_PRE_MS=prep_sec.get('t0_pre_ms', 20.0),
-        T0_POST_MS=prep_sec.get('t0_post_ms', 60.0),
-        T0_THRESHOLD_MULT=prep_sec.get('t0_threshold_mult', 1.0),
+        T0_PRE_MS=prep_sec.get('t0_pre_ms', 50.0),
+        T0_POST_MS=prep_sec.get('t0_post_ms', 150.0),
+        T0_ETA_I=prep_sec.get('t0_eta_i', 0.5),
+        T0_ETA_U=prep_sec.get('t0_eta_u', 0.85),
 
         # model
         MODEL_TYPE=model_sec.get('type', 'cnn1d'),
@@ -324,7 +340,41 @@ def load_config(yaml_path: str, overrides: dict = None) -> 'Config':
         # logging
         LOG_DIR=log_sec.get('log_dir', 'logs'),
         LOG_EVERY_N_BATCHES=log_sec.get('log_every_n_batches', 50),
+
+        # activation_export (diploma visuals)
+        ACTIVATION_EXPORT_ENABLED=raw.get('activation_export', {}).get('enabled', False),
+        ACTIVATION_EXPORT_LAYERS=raw.get('activation_export', {}).get('layers', 'auto'),
+        ACTIVATION_EXPORT_CAPTURE_EPOCHS=raw.get('activation_export', {}).get(
+            'capture_epochs', ["first", "best", "every_n:5"]
+        ),
+        ACTIVATION_EXPORT_PROBE_MODE=raw.get('activation_export', {}).get('probe_mode', 'first_val_sample'),
+        ACTIVATION_EXPORT_EXPORT_FORMATS=raw.get('activation_export', {}).get('export_formats', ['png', 'csv']),
+        ACTIVATION_EXPORT_OUTPUT_DIR=raw.get('activation_export', {}).get('output_dir', 'activations'),
+        ACTIVATION_EXPORT_MAX_CHANNELS_TO_PLOT=raw.get('activation_export', {}).get('max_channels_to_plot', 8),
+        ACTIVATION_EXPORT_DPI=raw.get('activation_export', {}).get('dpi', 300),
+        STRICT_ACTIVATION_EXPORT=raw.get('activation_export', {}).get('strict_activation_export', False),
     )
+
+    # --- Post-process types (YAML can sometimes parse scientific notation like 1e-5 as str) ---
+    # Fix common numeric fields that must be floats/ints for torch optimizers.
+    if isinstance(cfg.WEIGHT_DECAY, str):
+        cfg.WEIGHT_DECAY = float(cfg.WEIGHT_DECAY)
+    if isinstance(cfg.LEARNING_RATE, str):
+        cfg.LEARNING_RATE = float(cfg.LEARNING_RATE)
+    if isinstance(cfg.GRADIENT_CLIP, str):
+        cfg.GRADIENT_CLIP = float(cfg.GRADIENT_CLIP) if cfg.GRADIENT_CLIP.lower() not in ("none", "null") else None
+    if isinstance(cfg.BATCH_SIZE, str):
+        cfg.BATCH_SIZE = int(cfg.BATCH_SIZE)
+    if isinstance(cfg.NUM_EPOCHS, str):
+        cfg.NUM_EPOCHS = int(cfg.NUM_EPOCHS)
+    if isinstance(cfg.SEED, str):
+        cfg.SEED = int(cfg.SEED)
+
+    # If symseq is enabled the dataset appends 6 extra channels (6 -> 12).
+    # Many YAML configs keep data.num_channels=6 as "phase channels count",
+    # so we align model input channels with dataset output.
+    if bool(getattr(cfg, "SYMSEQ_ENABLED", False)) and int(cfg.NUM_CHANNELS) == 6:
+        cfg.NUM_CHANNELS = 12
 
     # Attach augmentation section for pipeline scripts
     cfg._augmentation_cfg = raw.get('augmentation', {})

@@ -167,6 +167,7 @@ def main():
         seq_length=cfg.SEQ_LENGTH,
         num_channels=cfg.NUM_CHANNELS,
         normalize=cfg.NORMALIZE_DATA,
+        cfg=cfg,
     )
     # Val reuses train scalers -> no leakage
     val_dataset = FaultDataset(
@@ -176,6 +177,7 @@ def main():
         normalize=cfg.NORMALIZE_DATA,
         signal_scalers=train_dataset.signal_scalers,
         distance_scaler=train_dataset.distance_scaler,
+        cfg=cfg,
     )
 
     pin = cfg.DEVICE == 'cuda'

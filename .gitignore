@@ -72,8 +72,90 @@ data/*.csv
 # Temporary files
 *.tmp
 *.temp
+*.temp.*
 .cache/
 
 # Environment variables
 .env
 .env.local
+
+# -----------------------------
+# Production-grade ignores (ML / Python / tooling)
+# -----------------------------
+
+# Python tooling
+.mypy_cache/
+.pytest_cache/
+.ruff_cache/
+coverage/
+htmlcov/
+.tox/
+nox/
+pip-log.txt
+*.coverage
+*.coverage.*
+*.cache
+.coverage.*
+*.log.*
+
+# Static type checkers / editors
+*.iml
+
+# Jupyter / IPython runtime
+.ipython/
+profile_default/
+kernels/
+.ipynb_metadata/
+
+# Dataset / preprocessing outputs (common in research repos)
+data/**/*.pt
+data/**/*.pth
+data/**/*.npy
+data/**/*.npz
+data/**/*.h5
+data/**/*.hdf5
+data/**/*.parquet
+data/**/*.feather
+data/**/*.pkl
+data/**/*.pickle
+data/**/*.csv
+data/**/*.txt
+data/**/processed/
+data/**/raw/
+data/**/splits/
+data/**/split/
+data/**/versioned/
+data/**/cache/
+
+# Local experiment artifacts
+runs/
+run/
+wandb/
+wandb/*
+lightning_logs/
+tensorboard/
+tfevents.out.*
+events.out.*
+
+# Plotting / visualization caches
+plots/
+plot/
+visualizations/
+visualizations/**
+
+# Intermediate computation artifacts
+tmp/
+temp/
+temp*/
+scratch/
+__pypackages__/
+
+# OS-specific
+Thumbs.db
+
+# Notebook exports
+*.ipynb_checkpoints/**
+
+# Keep gitkeep files (allowlist)
+!.gitkeep
+!**/.gitkeep

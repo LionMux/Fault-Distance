@@ -29,31 +29,31 @@ class TestTimeShiftAugmentation:
     
     @pytest.fixture
     def sample_df(self):
-        """Create sample DataFrame with 401 rows."""
+        """Create sample DataFrame with 400 rows."""
         data = {
-            'distance_km': [0.5] * 401,
-            'CT1IA': np.linspace(0, 260, 401),
-            'CT1IB': np.linspace(0, 260, 401),
-            'CT1IC': np.linspace(0, 260, 401),
-            'S1) BUS1UA': np.linspace(0, 100, 401),
-            'S1) BUS1UB': np.linspace(0, 100, 401),
-            'S1) BUS1UC': np.linspace(0, 100, 401),
+            'distance_km': [0.5] * 400,
+            'CT1IA': np.linspace(0, 260, 400),
+            'CT1IB': np.linspace(0, 260, 400),
+            'CT1IC': np.linspace(0, 260, 400),
+            'S1) BUS1UA': np.linspace(0, 100, 400),
+            'S1) BUS1UB': np.linspace(0, 100, 400),
+            'S1) BUS1UC': np.linspace(0, 100, 400),
         }
         return pd.DataFrame(data)
     
     def test_initialization(self):
         """Test TimeShiftAugmentation initialization."""
-        ts = TimeShiftAugmentation(seq_length=401)
-        assert ts.seq_length == 401
+        ts = TimeShiftAugmentation(seq_length=400)
+        assert ts.seq_length == 400
     
     def test_shift_left(self, sample_df):
         """Test left shift preserves row count."""
-        ts = TimeShiftAugmentation(seq_length=401)
+        ts = TimeShiftAugmentation(seq_length=400)
         
         df_shifted = ts.shift_left(sample_df, shift_amount=10)
         
-        # Should maintain 401 rows
-        assert len(df_shifted) == 401
+        # Should maintain 400 rows
+        assert len(df_shifted) == 400
         
         # Should have correct columns
         assert set(df_shifted.columns) == set(sample_df.columns)
@@ -67,12 +67,12 @@ class TestTimeShiftAugmentation:
     
     def test_shift_right(self, sample_df):
         """Test right shift preserves row count."""
-        ts = TimeShiftAugmentation(seq_length=401)
+        ts = TimeShiftAugmentation(seq_length=400)
         
         df_shifted = ts.shift_right(sample_df, shift_amount=10)
         
-        # Should maintain 401 rows
-        assert len(df_shifted) == 401
+        # Should maintain 400 rows
+        assert len(df_shifted) == 400
         
         # Should have correct columns
         assert set(df_shifted.columns) == set(sample_df.columns)
@@ -86,7 +86,7 @@ class TestTimeShiftAugmentation:
     
     def test_shift_zero(self, sample_df):
         """Test zero shift returns unchanged."""
-        ts = TimeShiftAugmentation(seq_length=401)
+        ts = TimeShiftAugmentation(seq_length=400)
         
         df_shifted = ts.shift_left(sample_df, shift_amount=0)
         
@@ -95,7 +95,7 @@ class TestTimeShiftAugmentation:
     
     def test_invalid_length(self):
         """Test error on wrong input length."""
-        ts = TimeShiftAugmentation(seq_length=401)
+        ts = TimeShiftAugmentation(seq_length=400)
         
         # Create 200-row DataFrame
         df_short = pd.DataFrame({
@@ -119,20 +119,20 @@ class TestGaussianNoiseAugmentation:
     def sample_df(self):
         """Create sample DataFrame."""
         data = {
-            'distance_km': [0.5] * 401,
-            'CT1IA': np.sin(np.linspace(0, 4*np.pi, 401)) * 100,
-            'CT1IB': np.sin(np.linspace(0, 4*np.pi, 401)) * 100,
-            'CT1IC': np.sin(np.linspace(0, 4*np.pi, 401)) * 100,
-            'S1) BUS1UA': np.ones(401) * 100,
-            'S1) BUS1UB': np.ones(401) * 100,
-            'S1) BUS1UC': np.ones(401) * 100,
+            'distance_km': [0.5] * 400,
+            'CT1IA': np.sin(np.linspace(0, 4*np.pi, 400)) * 100,
+            'CT1IB': np.sin(np.linspace(0, 4*np.pi, 400)) * 100,
+            'CT1IC': np.sin(np.linspace(0, 4*np.pi, 400)) * 100,
+            'S1) BUS1UA': np.ones(400) * 100,
+            'S1) BUS1UB': np.ones(400) * 100,
+            'S1) BUS1UC': np.ones(400) * 100,
         }
         return pd.DataFrame(data)
     
     def test_initialization(self):
         """Test GaussianNoiseAugmentation initialization."""
-        gn = GaussianNoiseAugmentation(seq_length=401, num_channels=6)
-        assert gn.seq_length == 401
+        gn = GaussianNoiseAugmentation(seq_length=400, num_channels=6)
+        assert gn.seq_length == 400
         assert gn.num_channels == 6
     
     def test_snr_db_calculation(self, sample_df):
@@ -194,13 +194,13 @@ class TestAugmentationPipeline:
     def sample_csv_file(self, temp_dir):
         """Create sample CSV file."""
         data = {
-            'distance_km': [0.5] * 401,
-            'CT1IA': np.linspace(0, 260, 401),
-            'CT1IB': np.linspace(0, 260, 401),
-            'CT1IC': np.linspace(0, 260, 401),
-            'S1) BUS1UA': np.linspace(0, 100, 401),
-            'S1) BUS1UB': np.linspace(0, 100, 401),
-            'S1) BUS1UC': np.linspace(0, 100, 401),
+            'distance_km': [0.5] * 400,
+            'CT1IA': np.linspace(0, 260, 400),
+            'CT1IB': np.linspace(0, 260, 400),
+            'CT1IC': np.linspace(0, 260, 400),
+            'S1) BUS1UA': np.linspace(0, 100, 400),
+            'S1) BUS1UB': np.linspace(0, 100, 400),
+            'S1) BUS1UC': np.linspace(0, 100, 400),
         }
         df = pd.DataFrame(data)
         
@@ -236,9 +236,9 @@ class TestAugmentationPipeline:
         for fpath in created_files:
             assert os.path.exists(fpath)
             
-            # Each file should be valid CSV with 401 rows
+            # Each file should be valid CSV with 400 rows
             df = pd.read_csv(fpath)
-            assert len(df) == 401
+            assert len(df) == 400
     
     def test_augment_dataset(self, temp_dir):
         """Test augmentation of entire dataset."""
@@ -249,13 +249,13 @@ class TestAugmentationPipeline:
         
         for i, distance in enumerate([0.5, 1.0, 1.5, 2.0, 2.5]):
             data = {
-                'distance_km': [distance] * 401,
-                'CT1IA': np.linspace(0, 260, 401),
-                'CT1IB': np.linspace(0, 260, 401),
-                'CT1IC': np.linspace(0, 260, 401),
-                'S1) BUS1UA': np.linspace(0, 100, 401),
-                'S1) BUS1UB': np.linspace(0, 100, 401),
-                'S1) BUS1UC': np.linspace(0, 100, 401),
+                'distance_km': [distance] * 400,
+                'CT1IA': np.linspace(0, 260, 400),
+                'CT1IB': np.linspace(0, 260, 400),
+                'CT1IC': np.linspace(0, 260, 400),
+                'S1) BUS1UA': np.linspace(0, 100, 400),
+                'S1) BUS1UB': np.linspace(0, 100, 400),
+                'S1) BUS1UC': np.linspace(0, 100, 400),
             }
             df = pd.DataFrame(data)
             df.to_csv(os.path.join(input_dir, f'1A_{distance:.1f}km.csv'), index=False)

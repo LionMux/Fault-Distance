@@ -12,11 +12,13 @@ import torch
 import pandas as pd
 
 from config import Config
+from data.preprocessing import preprocess_signal_for_inference, apply_pu_normalization
 from models.cnn1d import CNN1D, DilatedCNN1D
 from models.resnet1d import ResNet1D
 
 SIGNAL_COLS = ['CT1IA', 'CT1IB', 'CT1IC', 'S1) BUS1UA', 'S1) BUS1UB', 'S1) BUS1UC']
 DISTANCE_COL = 'distance_km'
+FS_COL = 'fs_hz'
 
 
 class FaultDistancePredictor:
@@ -35,7 +37,7 @@ class FaultDistancePredictor:
         self.model.to(self.device)
         self.model.eval()
 
-        print(f"✓ Model loaded. Checkpoint from epoch {checkpoint.get('epoch', 'unknown')}")
+        print(f"[OK] Model loaded. Checkpoint from epoch {checkpoint.get('epoch', 'unknown')}")
 
     def _build_model(self):
         if self.cfg.MODEL_TYPE == 'cnn1d':
@@ -65,30 +67,39 @@ class FaultDistancePredictor:
 
         Expected format:
             Columns: distance_km, CT1IA, CT1IB, CT1IC, S1) BUS1UA, S1) BUS1UB, S1) BUS1UC
-            Rows   : SEQ_LENGTH time steps (e.g. 400)
+            Rows   : SEQ_LENGTH time steps (default 1000)
         """
         print(f"\nLoading CSV from {csv_path}...")
         df = pd.read_csv(csv_path)
 
-        if has_labels:
-            distance_true = float(df[DISTANCE_COL].iloc[0])
-            signals = df[SIGNAL_COLS].values.astype(np.float32)   # (SEQ_LENGTH, 6)
-        else:
-            distance_true = None
-            signals = df.values.astype(np.float32)
+        # Replicate FaultDataset preprocessing for consistent inference
+        signals, distance_true, _ = preprocess_signal_for_inference(df, self.cfg)
 
-        # (SEQ_LENGTH, NUM_CHANNELS) -> (NUM_CHANNELS, SEQ_LENGTH)
-        signals = signals.T
+        if not has_labels:
+            distance_true = None
+
         print(f"Signal shape: {signals.shape}  (channels x time steps)")
 
-        # Per-channel normalization using saved scalers
-        # scalers['signal'] is a list of NUM_CHANNELS StandardScaler objects
+        expected_channels = int(getattr(self.cfg, "NUM_CHANNELS", signals.shape[0]))
         signal_scalers = self.scalers.get('signal')
         if signal_scalers:
+            expected_channels = len(signal_scalers)
+
+        if signals.shape[0] != expected_channels:
+            if signals.shape[0] > expected_channels:
+                signals = signals[:expected_channels, :]
+                print(f"[Inference] Trimmed signals to expected_channels={expected_channels}. New shape: {signals.shape}")
+            else:
+                raise ValueError(
+                    f"[Inference] signals channels mismatch: got {signals.shape[0]}, expected {expected_channels}."
+                )
+
+        # Apply normalization: p.u. or saved scalers (standard)
+        if getattr(self.cfg, 'NORMALIZATION_MODE', 'standard') == 'pu':
+            signals = apply_pu_normalization(signals, self.cfg)
+        elif signal_scalers:
             for ch_idx, scaler in enumerate(signal_scalers):
-                signals[ch_idx] = scaler.transform(
-                    signals[ch_idx].reshape(-1, 1)
-                ).flatten()
+                signals[ch_idx] = scaler.transform(signals[ch_idx].reshape(-1, 1)).flatten()
 
         # (NUM_CHANNELS, SEQ_LENGTH) -> (1, NUM_CHANNELS, SEQ_LENGTH)
         tensor = torch.FloatTensor(signals).unsqueeze(0).to(self.device)
@@ -96,9 +107,10 @@ class FaultDistancePredictor:
         with torch.no_grad():
             pred_norm = self.model(tensor).cpu().numpy().flatten()[0]
 
-        # Denormalize prediction using saved distance MinMaxScaler
-        dist_scaler = self.scalers.get('distance')
-        if dist_scaler:
+        # Denormalize prediction
+        if getattr(self.cfg, 'NORMALIZATION_MODE', 'standard') == 'pu':
+            prediction = float(pred_norm) * self.cfg.LINE_L_KM
+        elif dist_scaler:
             prediction = float(dist_scaler.inverse_transform([[pred_norm]])[0][0])
         else:
             prediction = float(pred_norm)
@@ -142,7 +154,7 @@ class FaultDistancePredictor:
 
     def save_predictions(self, results: dict, output_path: str):
         pd.DataFrame([results]).to_csv(output_path, index=False)
-        print(f"\n✓ Predictions saved to {output_path}")
+        print(f"\n[OK] Predictions saved to {output_path}")
 
 
 def main():

@@ -1,218 +1,145 @@
 """Fault inception time detection and window cropping utilities.
 
-This module implements a two-stage algorithm for precise localisation of the
-fault inception moment t0 in power system oscillograms, based on the
-specification provided in the project documentation:
+Notebook-compliant implementation of the RMS-based fault inception detection
+from the fault_location_preprocessing_pipeline notebook.
 
-Stage I  : coarse localisation using a 4th-order discrete differential operator
-Stage II : precise localisation using a cycle-to-cycle current difference index
+Algorithm (notebook Stage 3):
+    1. Compute RMS in two adjacent windows of length T/4 (k = fs/(4*f_net)).
+    2. For every sample compute I_post/I_pre and U_post/U_pre.
+    3. Fault is declared when max phase current rises (>1+eta_I)
+       AND min phase voltage drops (<eta_U).
+    4. Skip the first 2 windows to avoid false triggering on start-up.
 
-The implementation is kept generic and reusable so it can be applied to any
-1D current waveforms sampled at a known frequency, not only within this
-project.
-
-IMPORTANT — sampling frequency (fs_hz)
----------------------------------------
-Do NOT hardcode fs_hz here or in the call-site config.  The real sampling
-frequency is stored by comtrade_to_csv.py in every CSV file under the column
-'fs_hz', and dataset.py reads it automatically per file before constructing
-FaultInceptionParams.  fs_hz in FaultInceptionParams therefore has NO default
-value: it must always be supplied explicitly so that any wrong-default bug is
-caught immediately as a TypeError at construction time.
+Window cropping (notebook Stage 4):
+    - pre_fault_ms  = 50 ms  (notebook)
+    - post_fault_ms = 150 ms (notebook)
+    - total = 200 ms => 1000 samples @ Fs=5000 Hz
 """
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Optional, Sequence, Tuple
 
 import numpy as np
-from scipy.signal import resample
-
+# resample is no longer used inside crop_around_t0 (no resampling / target-length fitting)
 
 @dataclass
 class FaultInceptionParams:
-    """Configuration for fault inception detection.
+    """Configuration for fault inception detection (notebook-compliant).
 
     Attributes:
-        fs_hz:            Sampling frequency of the signal in Hz.
-                          **No default** — must be supplied explicitly.
-                          dataset.py reads the real value from the 'fs_hz'
-                          column written by comtrade_to_csv.py.
-        mains_hz:         Power system fundamental frequency (50 or 60 Hz).
-        coarse_top_k:     Number of largest peaks of the 4th-order difference
-                          to consider when choosing the earliest candidate.
-        coarse_window_ms: Half-width of the search window around the coarse
-                          index, in milliseconds.
-        pre_fault_ms:     Amount of pre-fault history to keep when cropping
-                          around t0, in milliseconds.
-        post_fault_ms:    Amount of post-fault data to keep after t0, in ms.
-        threshold_mult:   Multiplier for the adaptive threshold based on the
-                          mean of the derivative of the cycle index on the
-                          pre-fault segment.
+        fs_hz:         Sampling frequency of the signal in Hz.
+                       **No default** — must be supplied explicitly.
+        mains_hz:      Power system fundamental frequency (50 or 60 Hz).
+        eta_I:         Current-rise threshold multiplier (default 0.5 = 50%%).
+        eta_U:         Voltage-drop threshold multiplier (default 0.85 = 85%%).
+        pre_fault_ms:  Amount of pre-fault history to keep (notebook: 50 ms).
+        post_fault_ms: Amount of post-fault data to keep (notebook: 150 ms).
     """
 
     fs_hz: float            # NO default — must be provided (read from CSV)
     mains_hz: float = 50.0
-    coarse_top_k: int = 5
-    coarse_window_ms: float = 200.0
-    pre_fault_ms: float = 20.0
-    post_fault_ms: float = 60.0
-    threshold_mult: float = 1.0
+    eta_I: float = 0.5
+    eta_U: float = 0.85
+    pre_fault_ms: float = 50.0
+    post_fault_ms: float = 150.0
 
 
 # ---------------------------------------------------------------------------
-# Core 1-phase algorithms
+# Core RMS-based algorithm (notebook)
 # ---------------------------------------------------------------------------
 
 
-def _fourth_order_difference(i: np.ndarray) -> np.ndarray:
-    """Compute 4th-order discrete difference D4(k).
-
-    D4(k) = i(k+2) - 4 i(k+1) + 6 i(k) - 4 i(k-1) + i(k-2)
-
-    Implemented via convolution with kernel [1, -4, 6, -4, 1] using
-    'same' padding to keep the original length.
-    """
-    kernel = np.array([1.0, -4.0, 6.0, -4.0, 1.0], dtype=np.float32)
-    return np.convolve(i.astype(np.float32), kernel, mode="same")
+def _window_rms(x: np.ndarray, start: int, end: int) -> float:
+    """Root-mean-square over a slice."""
+    return float(np.sqrt(np.mean(x[start:end] ** 2)))
 
 
-def _coarse_fault_index(i: np.ndarray, params: FaultInceptionParams) -> int:
-    """Coarse localisation of the fault interval using D4(k).
-
-    The earliest index among the top-K absolute maxima of D4(k) is returned,
-    which corresponds to the first strong high-frequency disturbance.
-    """
-    d4 = np.abs(_fourth_order_difference(i))
-    if d4.size == 0:
-        raise ValueError("Signal for coarse fault detection is empty")
-
-    k = min(params.coarse_top_k, d4.size)
-    if k <= 0:
-        return int(np.argmax(d4))
-
-    top_idx = np.argpartition(d4, -k)[-k:]
-    return int(np.min(top_idx))
-
-
-def _cycle_difference_index(
-    i: np.ndarray, params: FaultInceptionParams
-) -> Tuple[np.ndarray, int]:
-    """Compute cycle-to-cycle difference index Delta_i(k).
-
-    Delta_i(k) = |i(k) - i(k-N)| - |i(k-N) - i(k-2N)|
-
-    where N is the number of samples per mains period.
-    """
-    fs = float(params.fs_hz)
-    mains = float(params.mains_hz)
-    if fs <= 0 or mains <= 0:
-        raise ValueError("Sampling frequency and mains frequency must be positive")
-
-    N = max(int(round(fs / mains)), 1)
-
-    di = np.zeros_like(i, dtype=np.float32)
-    if i.size < 2 * N + 1:
-        return di, N
-
-    i_k   = i[2 * N:]
-    i_k_N = i[N:-N]
-    i_k_2N = i[:-2 * N]
-
-    di[2 * N:] = np.abs(i_k - i_k_N) - np.abs(i_k_N - i_k_2N)
-    return di, N
-
-
-def detect_t0_single_phase(
-    i: np.ndarray, params: FaultInceptionParams
-) -> Optional[int]:
-    """Detect fault inception index t0 for a single current waveform.
-
-    1) Coarse localisation via 4th-order difference D4(k).
-    2) Cycle-difference index Delta_i(k) and its first derivative inside a
-       window around the coarse index.
-    3) Adaptive threshold; first index exceeding it is returned as t0.
-    """
-    if i.ndim != 1:
-        raise ValueError("Signal i must be 1-D for single-phase detection")
-    if i.size < 10:
-        return None
-
-    coarse_idx = _coarse_fault_index(i, params)
-
-    radius_samples = max(int(round(params.coarse_window_ms * 1e-3 * params.fs_hz)), 1)
-    start = max(0, coarse_idx - radius_samples)
-    end   = min(i.size, coarse_idx + radius_samples)
-    if end - start < 3:
-        return int(coarse_idx)
-
-    di, _ = _cycle_difference_index(i, params)
-    window = di[start:end]
-
-    d_idx = np.zeros_like(window, dtype=np.float32)
-    d_idx[1:] = window[1:] - window[:-1]
-
-    rel_coarse  = coarse_idx - start
-    pre_end     = max(1, min(rel_coarse, d_idx.size))
-    pre_segment = d_idx[:pre_end]
-
-    if np.allclose(pre_segment, 0.0):
-        pre_segment = d_idx
-
-    threshold = float(pre_segment.mean() * params.threshold_mult)
-
-    for local_k in range(pre_end, d_idx.size):
-        if d_idx[local_k] > threshold:
-            return int(start + local_k)
-
-    return int(coarse_idx)
-
-
-# ---------------------------------------------------------------------------
-# Multi-phase helpers and window cropping
-# ---------------------------------------------------------------------------
-
-
-def detect_t0_multi_phase(
+def detect_t0_rms(
     currents: np.ndarray,
+    voltages: np.ndarray,
     params: FaultInceptionParams,
 ) -> Optional[int]:
-    """Detect t0 across several phase currents.
+    """Detect fault inception using the notebook RMS-based threshold algorithm.
 
     Args:
-        currents: Array with shape (num_phases, T) holding phase currents.
+        currents: Array shape (3, T) — [IA, IB, IC].
+        voltages: Array shape (3, T) — [UA, UB, UC].
+        params:   FaultInceptionParams — fs_hz must be set.
 
     Returns:
-        Global t0 index (earliest among phases) or None if all phases failed.
+        Fault inception sample index or None if not detected.
     """
-    if currents.ndim != 2:
-        raise ValueError("currents must have shape (num_phases, T)")
+    if currents.ndim != 2 or voltages.ndim != 2:
+        raise ValueError("currents and voltages must be 2-D with shape (3, T)")
+    if currents.shape[0] != 3 or voltages.shape[0] != 3:
+        raise ValueError("Exactly 3 phases required for currents and voltages")
 
-    t_candidates = []
-    for ph in range(currents.shape[0]):
-        t0 = detect_t0_single_phase(currents[ph], params)
-        if t0 is not None:
-            t_candidates.append(int(t0))
+    fs = float(params.fs_hz)
+    f_net = float(params.mains_hz)
+    k = int(fs / (4 * f_net))
+    n = currents.shape[1]
 
-    return int(min(t_candidates)) if t_candidates else None
+    if n < 2 * k:
+        return None
+
+    ia, ib, ic = currents[0], currents[1], currents[2]
+    ua, ub, uc = voltages[0], voltages[1], voltages[2]
+
+    I_ratio = np.ones(n, dtype=np.float32)
+    U_ratio = np.ones(n, dtype=np.float32)
+
+    for i in range(k, n - k):
+        I_pre = max(
+            _window_rms(ia, i - k, i),
+            _window_rms(ib, i - k, i),
+            _window_rms(ic, i - k, i),
+        )
+        I_post = max(
+            _window_rms(ia, i, i + k),
+            _window_rms(ib, i, i + k),
+            _window_rms(ic, i, i + k),
+        )
+        U_pre = min(
+            _window_rms(ua, i - k, i),
+            _window_rms(ub, i - k, i),
+            _window_rms(uc, i - k, i),
+        )
+        U_post = min(
+            _window_rms(ua, i, i + k),
+            _window_rms(ub, i, i + k),
+            _window_rms(uc, i, i + k),
+        )
+
+        I_ratio[i] = I_post / (I_pre + 1e-9) if I_pre > 1e-6 else 1.0
+        U_ratio[i] = U_post / (U_pre + 1e-9) if U_pre > 1e-6 else 1.0
+
+    # Skip first 2 windows to avoid false triggering on start-up transients
+    skip = 2 * k
+    candidates = np.where(
+        (I_ratio > (1.0 + params.eta_I)) & (U_ratio < params.eta_U)
+    )[0]
+    candidates = candidates[candidates >= skip]
+
+    if len(candidates) == 0:
+        return None
+
+    return int(candidates[0])
+
+
+# ---------------------------------------------------------------------------
+# Window cropping
+# ---------------------------------------------------------------------------
 
 
 def crop_around_t0(
     signals: np.ndarray,
     t0_idx: int,
     params: FaultInceptionParams,
-    target_length: Optional[int] = None,
 ) -> Tuple[np.ndarray, int]:
-    """Crop multi-channel signal around t0 and optionally resample.
+    """Crop multi-channel signal around t0.
 
-    Args:
-        signals:       Array of shape (T, C) – time along axis 0.
-        t0_idx:        Fault inception index in the original signal.
-        params:        FaultInceptionParams instance.
-        target_length: If given, resample the cropped window to this length.
-
-    Returns:
-        cropped: Shape (T_crop, C) or (target_length, C).
-        t0_local: Index of t0 within the returned window.
+    ВАЖНО: функция больше НЕ делает resample/подгонку под target_length.
+    Длина окна определяется только кропом относительно t0.
     """
     if signals.ndim != 2:
         raise ValueError("signals must have shape (T, C)")
@@ -220,25 +147,34 @@ def crop_around_t0(
     T, _ = signals.shape
     t0_idx = int(np.clip(t0_idx, 0, max(T - 1, 0)))
 
-    pre_samp  = max(int(round(params.pre_fault_ms  * 1e-3 * params.fs_hz)), 1)
+    pre_samp = max(int(round(params.pre_fault_ms * 1e-3 * params.fs_hz)), 1)
     post_samp = max(int(round(params.post_fault_ms * 1e-3 * params.fs_hz)), 1)
+    window_len = pre_samp + post_samp
 
-    start = max(0, t0_idx - pre_samp)
-    end   = min(T, t0_idx + post_samp)
+    # Хотим всегда вернуть окно фиксированной длины window_len,
+    # даже если t0 близко к краям сигнала.
+    # Базовое расположение окна: [t0_idx - pre_samp, t0_idx + post_samp)
+    start = int(t0_idx - pre_samp)
+    end = int(start + window_len)
 
+    # Сдвигаем окно внутрь диапазона [0, T)
+    if start < 0:
+        end = int(end - start)  # увеличиваем end на |start|
+        start = 0
+    if end > T:
+        shift = int(end - T)
+        start = int(start - shift)
+        end = T
+    start = max(0, start)
+    end = min(T, end)
+
+    # Если сигнал слишком короткий, чем запрошенное окно,
+    # возвращаем всё, что есть (это крайний случай).
     if end <= start:
         return signals.copy(), int(t0_idx)
 
     window = signals[start:end, :].astype(np.float32, copy=True)
-
-    if target_length is not None and window.shape[0] != target_length:
-        window   = resample(window, target_length, axis=0).astype(np.float32, copy=False)
-        total    = pre_samp + post_samp
-        frac     = pre_samp / float(total) if total > 0 else 0.25
-        t0_local = int(np.clip(round(frac * (target_length - 1)), 0, target_length - 1))
-    else:
-        t0_local = int(np.clip(t0_idx - start, 0, window.shape[0] - 1))
-
+    t0_local = int(np.clip(t0_idx - start, 0, window.shape[0] - 1))
     return window, t0_local
 
 
@@ -246,6 +182,7 @@ def detect_t0_and_crop(
     signals: np.ndarray,
     params: FaultInceptionParams,
     current_channel_indices: Sequence[int] = (0, 1, 2),
+    voltage_channel_indices: Sequence[int] = (3, 4, 5),
     target_length: Optional[int] = None,
 ) -> Tuple[np.ndarray, Optional[int]]:
     """High-level helper: detect t0 and return cropped multi-channel window.
@@ -255,6 +192,7 @@ def detect_t0_and_crop(
         params:                  FaultInceptionParams — fs_hz must be set to
                                  the value read from the CSV 'fs_hz' column.
         current_channel_indices: Column indices of phase currents.
+        voltage_channel_indices: Column indices of phase voltages.
         target_length:           Optional output length (resampled if needed).
 
     Returns:
@@ -269,17 +207,23 @@ def detect_t0_and_crop(
         return signals, None
 
     current_channel_indices = tuple(current_channel_indices)
+    voltage_channel_indices = tuple(voltage_channel_indices)
+
     if any(ch < 0 or ch >= C for ch in current_channel_indices):
         raise IndexError("current_channel_indices contain out-of-range values")
+    if any(ch < 0 or ch >= C for ch in voltage_channel_indices):
+        raise IndexError("voltage_channel_indices contain out-of-range values")
 
-    currents  = signals[:, current_channel_indices].T  # (num_phases, T)
-    t0_global = detect_t0_multi_phase(currents, params)
+    currents = signals[:, current_channel_indices].T  # (3, T)
+    voltages = signals[:, voltage_channel_indices].T  # (3, T)
+    t0_global = detect_t0_rms(currents, voltages, params)
 
+    # ВАЖНО:
+    # Если t0 не найден — НЕ делаем resample/подгонку длины.
+    # Это убирает "тихую" подгонку окна к SEQ_LENGTH и гарантирует,
+    # что обрезка (кроп) происходит только по t0.
     if t0_global is None:
-        if target_length is not None and T != target_length:
-            resized = resample(signals, target_length, axis=0).astype(np.float32, copy=False)
-            return resized, None
         return signals, None
 
-    cropped, t0_local = crop_around_t0(signals, t0_global, params, target_length)
+    cropped, t0_local = crop_around_t0(signals, t0_global, params)
     return cropped, int(t0_local)

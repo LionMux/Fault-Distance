@@ -1,0 +1,21 @@
+# TODO — ML for Power/Energy Sector (≈100 papers deep-dive notebook)
+
+- [ ] Confirm deliverable format (A/B/C) and scope (fault-focused vs broad)
+- [ ] Define notebook structure (workflow, per-paper deep-dive template, validation mapping to grid physics)
+- [ ] Create paper inventory schema (bibliographic fields + tags + dataset/model/task taxonomy)
+- [ ] Curate an initial seed list of high-impact papers (diverse tasks: forecasting, fault diagnosis/location, stability, security, control)
+- [ ] Verify each paper’s bibliographic metadata and venue (IEEE/Elsevier/Springer/arXiv) using web search
+- [ ] Expand curation to ~100 papers with balanced coverage across subdomains
+- [ ] For each paper: write a deep-dive section using a consistent pedagogical template
+  - [ ] Data acquisition & cleaning (signals, outages, SCADA/PMU, labels)
+  - [ ] Feature engineering / representations (time-freq, phasors, embeddings)
+  - [ ] Model formulation (objective function, architecture math)
+  - [ ] Training derivation (loss, regularization, optimization steps)
+  - [ ] Validation metrics with physical meaning (precision/recall vs grid impact)
+  - [ ] Key assumptions, limitations, and “when it breaks”
+- [ ] Produce an overall workflow chapter (end-to-end pipeline from preprocessing → training → evaluation → deployment)
+- [ ] Add glossary + “math-to-intuition” explanations for each major equation
+- [ ] Run consistency checks (notation, symbols, units, metric definitions)
+- [ ] Ensure output is readable as a study manual (stepwise roadmap, no unexplained jumps)
+- [ ] Export final deliverable(s) to the agreed format and path(s)
+- [ ] Quality pass: verify completeness vs requirements (rigor, intuitive simplification, sequential roadmap, academic grounding)

@@ -1,0 +1,46 @@
+# Smoke test config for diploma activation export (minimal runtime).
+experiment_name: activation_smoke
+
+# Keep CPU runs stable
+device: cpu
+seed: 42
+
+model:
+  type: cnn1d
+  num_filters: 16
+  kernel_size: 5
+  dropout: 0.1
+
+training:
+  batch_size: 8
+  num_epochs: 1
+  optimizer: adam
+  learning_rate: 0.001
+  weight_decay: 1e-5
+  loss: smooth_l1
+  gradient_clip: 1.0
+
+early_stopping:
+  enabled: false
+  patience: 2
+  min_delta: 1e-4
+
+checkpointing:
+  save_dir: checkpoints
+  save_best_only: true
+  save_every_n_epochs: 1
+
+logging:
+  log_dir: logs_smoke
+  log_every_n_batches: 200
+
+activation_export:
+  enabled: true
+  layers: auto
+  capture_epochs: ["first"]
+  probe_mode: first_val_sample
+  export_formats: ["png", "csv"]
+  output_dir: activations
+  max_channels_to_plot: 4
+  dpi: 100
+  strict_activation_export: false

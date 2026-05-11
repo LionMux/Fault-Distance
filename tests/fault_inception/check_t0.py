@@ -26,18 +26,16 @@ from pathlib import Path
 # ---------------------------------------------------------------------------
 REPO_ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(REPO_ROOT))
-sys.path.insert(0, str(REPO_ROOT / "data"))
 
 # ===========================================================================
 # 1) DETECTOR PARAMETERS  — tune if t0 is wrong
 # ===========================================================================
 PARAMS_OVERRIDE = dict(
-    mains_hz         = 50.0,   # fundamental frequency of the power system, Hz
-    coarse_top_k     = 5,      # how many D4 peaks to consider for coarse t0
-    coarse_window_ms = 2000.0,  # half-window around coarse t0, ms
-    pre_fault_ms     = 20.0,   # pre-fault history kept when cropping (no effect on detection)
-    post_fault_ms    = 60.0,   # post-fault window kept when cropping  (no effect on detection)
-    threshold_mult   = 1.0,    # adaptive threshold multiplier — lower = fires earlier
+    mains_hz      = 50.0,   # fundamental frequency of the power system, Hz
+    pre_fault_ms  = 20.0,   # pre-fault history kept when cropping (no effect on detection)
+    post_fault_ms = 60.0,   # post-fault window kept when cropping  (no effect on detection)
+    eta_I         = 0.5,    # current ratio threshold: I_post / I_pre > 1 + eta_I
+    eta_U         = 0.85,   # voltage ratio threshold: U_post / U_pre < eta_U
 )
 
 # ===========================================================================
@@ -92,13 +90,7 @@ OSC_DIR = Path(__file__).parent / "oscillograms"
 # ---------------------------------------------------------------------------
 # Import detection function
 # ---------------------------------------------------------------------------
-try:
-    from fault_inception import FaultInceptionParams, detect_t0_multi_phase
-except ImportError:
-    from src.fault_distance.data.fault_inception import (
-        FaultInceptionParams,
-        detect_t0_multi_phase,
-    )
+from data.fault_inception import FaultInceptionParams, detect_t0_rms
 
 
 # ---------------------------------------------------------------------------
@@ -339,8 +331,19 @@ def main():
                 )
 
             params    = FaultInceptionParams(fs_hz=fs_hz, **PARAMS_OVERRIDE)
-            currents  = np.stack([ia, ib, ic], axis=0)   # (3, T)
-            t0_sample = detect_t0_multi_phase(currents, params)
+            ua = ch.get("ua")
+            ub = ch.get("ub")
+            uc = ch.get("uc")
+            T = len(ia)
+            if ua is None:
+                ua = np.zeros(T, dtype=np.float64)
+            if ub is None:
+                ub = np.zeros(T, dtype=np.float64)
+            if uc is None:
+                uc = np.zeros(T, dtype=np.float64)
+            currents = np.stack([ia, ib, ic], axis=0)   # (3, T)
+            voltages = np.stack([ua, ub, uc], axis=0)   # (3, T)
+            t0_sample = detect_t0_rms(currents, voltages, params)
 
             if t0_sample is None:
                 row = (

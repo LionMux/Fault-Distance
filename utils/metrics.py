@@ -93,7 +93,7 @@ class MetricsCalculator:
         print(f"MAE  (Mean Absolute Error):       {metrics['mae']:.6f} km")
         print(f"RMSE (Root Mean Squared Error):   {metrics['rmse']:.6f} km")
         print(f"MSE  (Mean Squared Error):        {metrics['mse']:.6f}")
-        print(f"R²   (R-squared):                 {metrics['r2']:.6f}")
+        print(f"R^2  (R-squared):                 {metrics['r2']:.6f}")
         print(f"MAPE (Mean Absolute % Error):    {metrics['mape']:.2f}%")
         print(f"{'='*60}\n")
         
